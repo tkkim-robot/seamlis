@@ -27,7 +27,7 @@ class QPError(Exception):
 
 class LocalTrackingController:
     def __init__(self, X0, type='DynamicUnicycle2D', dt=0.05,
-                  show_animation=False, save_animation=False, plotting=None, env=None):
+                  show_animation=False, save_animation=False, ax=None, fig=None, env=None):
         self.type = type
         self.dt = dt
 
@@ -55,25 +55,21 @@ class LocalTrackingController:
             self.save_per_frame = 2
             self.ani_idx = 0
 
-        self.plotting = plotting
+        self.ax = ax
+        self.fig = fig
         self.obs = np.array(env.obs_circle)
         self.unknown_obs = None
 
         if show_animation:
             # Initialize plotting
-            if self.plotting is None:
-                self.fig = plt.figure()
+            if self.ax is None:
                 self.ax = plt.axes()
-            else:
-                # plot the obstacles
-                self.ax, self.fig = self.plotting.plot_grid("Path Following")
+            if self.fig is None:
+                self.fig = plt.figure()
             plt.ion()
             self.ax.set_xlabel("X")
             self.ax.set_ylabel("Y")
             self.ax.set_aspect(1)
-
-            # Visualize goal and obstacles
-            self.ax.scatter(waypoints[:, 0], waypoints[:, 1], c='g', s=10)
         else:
             self.ax = plt.axes() # dummy placeholder
 
@@ -105,6 +101,8 @@ class LocalTrackingController:
     def set_waypoints(self, waypoints):
         self.waypoints = waypoints
         self.current_goal_index = 0
+        if self.show_animation:
+            self.ax.scatter(waypoints[:, 0], waypoints[:, 1], c='g', s=10)
 
     def goal_reached(self, current_position, goal_position):
         return np.linalg.norm(current_position[:2] - goal_position[:2]) < self.reached_threshold
@@ -224,7 +222,7 @@ class LocalTrackingController:
         # 7. Update sensing information
         self.robot.update_sensing_footprints()
         self.robot.update_safety_area()
-        #if self.current_goal_index > 5: #FIXME:
+
         beyond_flag = self.robot.is_beyond_sensing_footprints()
         if beyond_flag and self.show_animation:
             print("Visibility Violation")
@@ -272,17 +270,8 @@ class LocalTrackingController:
 
         return unexpected_beh
 
-if __name__ == "__main__":
+def single_agent_main():
     dt = 0.05
-    # import sys
-    # import os
-    # sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
-    from utils import plotting
-    from utils import env
-    import math
-
-    env_type = env.type
 
     # temporal
     waypoints = [
@@ -297,6 +286,8 @@ if __name__ == "__main__":
     x_goal = waypoints[-1]
 
     plot_handler = plotting.Plotting(x_init, x_goal)
+    plot_handler = plotting.Plotting(x_init, x_goal)
+    ax, fig = plot_handler.plot_grid("Local Tracking Controller")
     env_handler = env.Env()
 
     #type = 'Unicycle2D'
@@ -304,28 +295,60 @@ if __name__ == "__main__":
     tracking_controller = LocalTrackingController(x_init, type=type, dt=dt,
                                          show_animation=True,
                                          save_animation=False,
-                                         plotting=plot_handler,
+                                         ax=ax, fig=fig,
                                          env=env_handler)
-    # randomly generate 5 unknown obstacles
-    x_range = env_handler.x_range
-    y_range = env_handler.y_range
-    # unknown_obs = np.random.uniform(low=[x_range[0], y_range[0], 0], high=[x_range[1], y_range[1], 0], size=(20, 3))
-    # unknown_obs[:, 2] = 0.5
-    # unknown_obs = np.vstack((unknown_obs, [
-    #                     [10, 8, 0.5],
-    #                     [10.5, 8, 0.5],
-    #                     [11, 8, 0.5]])
-    # )
 
-    # if env_type == 1:
-    #     unknown_obs = np.array([[13.0, 10.0, 0.5],
-    #                             [12.0, 13.0, 0.5],
-    #                             [15.0, 20.0, 0.5],
-    #                             [20.5, 20.5, 0.5],
-    #                             [24.0, 15.0, 0.5]])
-    # elif env_type == 2: 
-    #     unknown_obs = np.array([[9.0, 8.8, 0.3]]) 
-
-    #tracking_controller.set_unknown_obs(unknown_obs)
+    # unknown_obs = np.array([[9.0, 8.8, 0.3]]) 
+    # tracking_controller.set_unknown_obs(unknown_obs)
     tracking_controller.set_waypoints(waypoints)
     unexpected_beh = tracking_controller.run_all_steps(tf=30)
+
+def multi_agent_main():
+    dt = 0.05
+
+    # temporal
+    waypoints = [
+        [2, 2, math.pi/2],
+        [2, 12, 0],
+        [10, 12, 0],
+        [10, 2, 0]
+    ]
+    waypoints = np.array(waypoints, dtype=np.float64)
+
+    x_init = waypoints[0]
+    x_goal = waypoints[-1]
+
+    plot_handler = plotting.Plotting(x_init, x_goal)
+    ax, fig = plot_handler.plot_grid("Local Tracking Controller")
+    env_handler = env.Env()
+
+    #type = 'Unicycle2D'
+    type = 'DynamicUnicycle2D'
+    controller_1 = LocalTrackingController(x_init, type=type, dt=dt,
+                                         show_animation=True,
+                                         save_animation=False,
+                                         ax=ax, fig=fig,
+                                         env=env_handler)
+    
+    controller_2 = LocalTrackingController(x_goal, type=type, dt=dt,
+                                         show_animation=True,
+                                         save_animation=False,
+                                         ax=ax, fig=fig,
+                                         env=env_handler)
+
+    # unknown_obs = np.array([[9.0, 8.8, 0.3]]) 
+    # tracking_controller.set_unknown_obs(unknown_obs)
+    controller_1.set_waypoints(waypoints)
+    controller_2.set_waypoints(waypoints[::-1])
+    tf = 30
+    for _ in range(int(tf / dt)):
+        _ = controller_1.control_step()
+        _ = controller_2.control_step()
+            
+
+if __name__ == "__main__":
+    from utils import plotting
+    from utils import env
+    import math
+
+    multi_agent_main()

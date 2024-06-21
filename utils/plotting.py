@@ -2,8 +2,8 @@
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import visibility_rrt.utils.env as env
-from visibility_rrt.utils.utils import calculate_fov_points, linewidth_from_data_units
+import utils.env as env
+from utils.utils import calculate_fov_points, linewidth_from_data_units
 import math
 import numpy as np
 

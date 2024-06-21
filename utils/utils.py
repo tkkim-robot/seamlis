@@ -1,18 +1,34 @@
 import math
 import numpy as np
 
-import visibility_rrt.utils.env as env
-from visibility_rrt.utils.node import Node
+import utils.env as env
 
 """
 Created on Jan 23, 2024
+Updated on June 21, 2024
 @author: Taekyung Kim
 
-@description: majority of this code if for collision checking with obstacles (rect, circle, boundary)
+@description: Majority of this code if for collision checking with obstacles (rect, circle, boundary)
+              It is built upon the same utils.py in visibility-rrt implementation
 
-@required-scripts: env.py, node.py
+@required-scripts: env.py
 
 """
+
+class Node:
+    def __init__(self, n):
+        self.x = n[0]
+        self.y = n[1]
+
+        if len(n) == 3:
+            self.yaw = n[2]
+        else:
+            self.yaw = None
+
+        self.parent = None
+        self.cost = 0
+        #self.StateTraj = None
+        self.childrenNodeInds = set([])
 
 def angular_diff(a, b):
     """Angle difference from b to a (a - b)"""
