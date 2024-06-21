@@ -8,3 +8,6 @@ __pycache__/
 
 # Ignore directories and files with "images" in their name
 output/
+
+# Currently ignore visibility_rrt, will be updated as a submodule later
+visibility_rrt/
