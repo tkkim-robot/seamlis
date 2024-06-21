@@ -132,6 +132,9 @@ class LocalTrackingController:
         else:
             all_obs = self.obs
 
+        if len(all_obs) == 0:
+            return None
+
         radius = all_obs[:, 2]
         distances = np.linalg.norm(all_obs[:, :2] - self.robot.X[:2].T, axis=1)
         min_distance_index = np.argmin(distances-radius)
@@ -178,11 +181,12 @@ class LocalTrackingController:
         detected_obs = self.robot.detect_unknown_obs(self.unknown_obs)
         nearest_obs = self.get_nearest_obs(detected_obs)
 
-        # 2. Compuite nominal control input, pre-defined in the robot class
-        self.u_ref.value = self.robot.nominal_input(goal)
-
-        # 3. Update the CBF constraints
-        if self.type == 'Unicycle2D':
+        # 2. Update the CBF constraints
+        if nearest_obs is None:
+            # deactivate the CBF constraints
+            self.A1.value = np.zeros_like(self.A1.value)
+            self.b1.value = np.zeros_like(self.b1.value)
+        elif self.type == 'Unicycle2D':
             h, dh_dx = self.robot.agent_barrier(nearest_obs)
             self.A1.value[0,:] = dh_dx @ self.robot.g()
             self.b1.value[0,:] = dh_dx @ self.robot.f() + self.alpha * h
@@ -190,6 +194,9 @@ class LocalTrackingController:
             h, h_dot, dh_dot_dx = self.robot.agent_barrier(nearest_obs)
             self.A1.value[0,:] = dh_dot_dx @ self.robot.g()
             self.b1.value[0,:] = dh_dot_dx @ self.robot.f() + (self.alpha1+self.alpha2) * h_dot + self.alpha1*self.alpha2*h
+
+        # 3. Compuite nominal control input, pre-defined in the robot class
+        self.u_ref.value = self.robot.nominal_input(goal)
 
          # 4. Solve this yields a new `self.u``
         self.cbf_controller.solve(solver=cp.GUROBI, reoptimize=True)
