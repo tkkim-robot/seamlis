@@ -9,7 +9,7 @@ def angle_normalize(x):
 
 class BaseRobot:
     
-    def __init__(self,X0,dt,ax,type='Unicycle2D'):
+    def __init__(self, X0, dt, ax, type='Unicycle2D', robot_id=0):
         '''
         X0: iniytial state
         dt: simulation time step
@@ -17,6 +17,11 @@ class BaseRobot:
         '''
         
         self.type = type
+        self.robot_id = robot_id
+
+        colors = plt.get_cmap('Pastel1').colors # color palette
+        color = colors[robot_id % len(colors) + 1]
+
         self.test_type = 'gatekeeper' # or 'cbf_qp'
         if type == 'Unicycle2D':
             try:
@@ -49,7 +54,7 @@ class BaseRobot:
         # Plot handles
         self.vis_orient_len = 0.3
         # Robot's body represented as a scatter plot
-        self.body = ax.scatter([],[],s=60,facecolors='b',edgecolors='b') #facecolors='none'
+        self.body = ax.scatter([], [], s=200, facecolors=color, edgecolors=color) #facecolors='none'
         # Store the unsafe points and scatter plot
         self.unsafe_points = []
         self.unsafe_points_handle = ax.scatter([],[],s=40,facecolors='r',edgecolors='r')
@@ -59,7 +64,7 @@ class BaseRobot:
         self.fov, = ax.plot([], [], 'k--')  # Unpack the tuple returned by plot
         # Initialize FOV fill handle with placeholder data
         self.fov_fill = ax.fill([], [], 'k', alpha=0.1)[0]  # Access the first element
-        self.sensing_footprints_fill = ax.fill([], [], 'b', alpha=0.1)[0]  # Access the first element
+        self.sensing_footprints_fill = ax.fill([], [], color=color, alpha=0.4)[0]  # Access the first element
         self.safety_area_fill = ax.fill([], [], 'r', alpha=0.3)[0]  
 
         self.detected_obs = None

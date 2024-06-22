@@ -26,7 +26,7 @@ class QPError(Exception):
 
 
 class LocalTrackingController:
-    def __init__(self, X0, type='DynamicUnicycle2D', robot_id=1, dt=0.05,
+    def __init__(self, X0, type='DynamicUnicycle2D', robot_id=0, dt=0.05,
                   show_animation=False, save_animation=False, ax=None, fig=None, env=None):
         self.type = type
         self.robot_id = robot_id # robot id = 1 has the plot handler
@@ -80,7 +80,7 @@ class LocalTrackingController:
 
     def setup_robot(self, X0):
         from robots.robot import BaseRobot
-        self.robot = BaseRobot(X0.reshape(-1, 1), self.dt, self.ax, self.type)
+        self.robot = BaseRobot(X0.reshape(-1, 1), self.dt, self.ax, self.type, self.robot_id)
 
     def setup_control_problem(self):
         self.u = cp.Variable((2, 1))
@@ -213,7 +213,7 @@ class LocalTrackingController:
                 self.robot.render_plot()
                 current_position = self.robot.X[:2].flatten()
                 self.ax.text(current_position[0]+0.5, current_position[1]+0.5, '!', color='red', weight='bold', fontsize=22)
-                if self.robot_id == 1:
+                if self.robot_id == 0:
                     self.fig.canvas.draw()
                     plt.pause(5)
 
@@ -236,7 +236,7 @@ class LocalTrackingController:
             print("Visibility Violation")
 
         if self.show_animation:
-            if self.robot_id == 1:
+            if self.robot_id == 0:
                 self.fig.canvas.draw()
                 plt.pause(0.01)
                 if self.save_animation and self.ani_idx % self.save_per_frame == 0:
@@ -335,16 +335,16 @@ def multi_agent_main():
 
     #type = 'Unicycle2D'
     type = 'DynamicUnicycle2D'
-    controller_1 = LocalTrackingController(x_init, type=type, 
-                                         robot_id=1,
+    controller_0 = LocalTrackingController(x_init, type=type, 
+                                         robot_id=0,
                                          dt=dt,
                                          show_animation=True,
                                          save_animation=False,
                                          ax=ax, fig=fig,
                                          env=env_handler)
     
-    controller_2 = LocalTrackingController(x_goal, type=type,
-                                         robot_id=2,
+    controller_1 = LocalTrackingController(x_goal, type=type,
+                                         robot_id=1,
                                          dt=dt,
                                          show_animation=True,
                                          save_animation=False,
@@ -353,13 +353,13 @@ def multi_agent_main():
 
     # unknown_obs = np.array([[9.0, 8.8, 0.3]]) 
     # tracking_controller.set_unknown_obs(unknown_obs)
-    controller_1.set_waypoints(waypoints)
-    controller_2.set_waypoints(waypoints[::-1])
+    controller_0.set_waypoints(waypoints)
+    controller_1.set_waypoints(waypoints[::-1])
     tf = 50
     for _ in range(int(tf / dt)):
         ret_list = []
+        ret_list.append(controller_0.control_step())
         ret_list.append(controller_1.control_step())
-        ret_list.append(controller_2.control_step())
         # if all elements of ret_list are -1, break
         if all([ret == -1 for ret in ret_list]):
             break
