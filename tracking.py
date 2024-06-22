@@ -11,6 +11,10 @@ Created on June 20th, 2024
 @author: Taekyung Kim
 
 @description: 
+This code implements a local tracking controller for 2D robot navigation using Control Barrier Functions (CBF) and Quadratic Programming (QP).
+It supports both kinematic (Unicycle2D) and dynamic (DynamicUnicycle2D) unicycle models, with functionality for obstacle avoidance and waypoint following.
+The controller includes real-time visualization capabilities and can handle both known and unknown obstacles.
+The main functions demonstrate single and multi-agent scenarios, showcasing the controller's ability to navigate complex environments.
 
 @required-scripts: robots/robot.py
 """
