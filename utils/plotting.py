@@ -8,8 +8,7 @@ import math
 import numpy as np
 
 class Plotting:
-    def __init__(self, x_start, x_goal):
-        self.xI, self.xG = x_start, x_goal
+    def __init__(self):
         self.env = env.Env()
         self.obs_bound = self.env.obs_boundary
         self.obs_circle = self.env.obs_circle
@@ -64,9 +63,6 @@ class Plotting:
                     fill=True
                 )
             )
-
-        plt.plot(self.xI[0], self.xI[1], "bs", linewidth=3)
-        plt.plot(self.xG[0], self.xG[1], "rs", linewidth=3)
 
         plt.title(name)
         eps = 1.0

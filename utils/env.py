@@ -14,6 +14,8 @@ if type == 2:
 
 class Env:
     def __init__(self):
+        self.width = WIDTH
+        self.height = HEIGHT
         self.x_range = (0, WIDTH)
         self.y_range = (0, HEIGHT)
         self.obs_boundary = self.obs_boundary(WIDTH, HEIGHT)
@@ -24,7 +26,7 @@ class Env:
     def obs_boundary(width, height):  # circle
         w = width
         h = height
-        linewidth = 0.5
+        linewidth = 0.1
         obs_boundary = [
             [0, 0, linewidth, h],
             [0, h, w, linewidth],

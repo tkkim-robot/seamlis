@@ -241,7 +241,6 @@ class BaseRobot:
             intersected_area = self.sensing_footprints.intersection(obs_circle)
 
             # Check each point on the intersected area's exterior
-
             points = []
             if intersected_area.geom_type == 'Polygon':
                 for point in intersected_area.exterior.coords:

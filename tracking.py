@@ -170,6 +170,15 @@ class LocalTrackingController:
 
         goal = np.array(self.waypoints[self.current_goal_index][0:2]) # set goal to next waypoint's (x,y)
         return goal
+    
+    def draw_plot(self, pause=0.01):
+        if self.show_animation:
+            self.fig.canvas.draw()
+            plt.pause(pause)
+            if self.save_animation and self.ani_idx % self.save_per_frame == 0:
+                plt.savefig(self.current_directory_path +
+                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
+                self.ani_idx += 1
 
     def control_step(self):
         '''
@@ -217,13 +226,7 @@ class LocalTrackingController:
                 self.robot.render_plot()
                 current_position = self.robot.X[:2].flatten()
                 self.ax.text(current_position[0]+0.5, current_position[1]+0.5, '!', color='red', weight='bold', fontsize=22)
-                if self.robot_id == 0:
-                    self.fig.canvas.draw()
-                    plt.pause(5)
-
-                    if self.save_animation:
-                        plt.savefig(self.current_directory_path +
-                                    "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
+                self.draw_plot(pause=5)
             raise QPError
 
         # 6. Step the robot
@@ -239,15 +242,6 @@ class LocalTrackingController:
         if beyond_flag and self.show_animation:
             print("Visibility Violation")
 
-        if self.show_animation:
-            if self.robot_id == 0:
-                self.fig.canvas.draw()
-                plt.pause(0.01)
-                if self.save_animation and self.ani_idx % self.save_per_frame == 0:
-                    plt.savefig(self.current_directory_path +
-                                "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
-                    self.ani_idx += 1
-
         if goal is None:
             return -1 # all waypoints reached
         return beyond_flag
@@ -260,6 +254,7 @@ class LocalTrackingController:
 
         for _ in range(int(tf / self.dt)):
             ret = self.control_step()
+            self.draw_plot()
             unexpected_beh += ret
             if ret == -1: # all waypoints reached
                 break
@@ -300,8 +295,8 @@ def single_agent_main():
     x_init = waypoints[0]
     x_goal = waypoints[-1]
 
-    plot_handler = plotting.Plotting(x_init, x_goal)
-    plot_handler = plotting.Plotting(x_init, x_goal)
+    plot_handler = plotting.Plotting()
+    plot_handler = plotting.Plotting()
     ax, fig = plot_handler.plot_grid("Local Tracking Controller")
     env_handler = env.Env()
 
@@ -333,7 +328,7 @@ def multi_agent_main():
     x_init = waypoints[0]
     x_goal = waypoints[-1]
 
-    plot_handler = plotting.Plotting(x_init, x_goal)
+    plot_handler = plotting.Plotting()
     ax, fig = plot_handler.plot_grid("Local Tracking Controller")
     env_handler = env.Env()
 
@@ -365,6 +360,7 @@ def multi_agent_main():
         ret_list.append(controller_0.control_step())
         ret_list.append(controller_1.control_step())
         # if all elements of ret_list are -1, break
+        controller_0.draw_plot()
         if all([ret == -1 for ret in ret_list]):
             break
             
