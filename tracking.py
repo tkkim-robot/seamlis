@@ -293,7 +293,6 @@ def single_agent_main():
     waypoints = np.array(waypoints, dtype=np.float64)
 
     x_init = waypoints[0]
-    x_goal = waypoints[-1]
 
     plot_handler = plotting.Plotting()
     plot_handler = plotting.Plotting()
@@ -359,8 +358,8 @@ def multi_agent_main():
         ret_list = []
         ret_list.append(controller_0.control_step())
         ret_list.append(controller_1.control_step())
-        # if all elements of ret_list are -1, break
         controller_0.draw_plot()
+        # if all elements of ret_list are -1, break
         if all([ret == -1 for ret in ret_list]):
             break
             

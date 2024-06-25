@@ -103,7 +103,7 @@ class BaseRobot:
         return self.robot.nominal_input(self.X, goal, d_min)
 
     def stop(self):
-        return self.robot.stop()
+        return self.robot.stop(self.X)
     
     def agent_barrier(self, obs):
         return self.robot.agent_barrier(self.X, obs, self.robot_radius)
