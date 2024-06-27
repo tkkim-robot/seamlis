@@ -1,29 +1,35 @@
 
-type = 2
-
-if type == 1:
-    WIDTH = 15
-    HEIGHT = 15
-    x_start = (2.0, 2.0, 0)  # Starting node (x, y, yaw)
-    x_goal = (10.0, 2.0)  # Goal node
-if type == 2:
-    WIDTH = 20
-    HEIGHT = 20
-    x_start = (2.0, 2.0, 0)  # Starting node (x, y, yaw)
-    x_goal = (15.0, 3.0)  # Goal node
-
 class Env:
-    def __init__(self):
-        self.width = WIDTH
-        self.height = HEIGHT
-        self.x_range = (0, WIDTH)
-        self.y_range = (0, HEIGHT)
-        self.obs_boundary = self.obs_boundary(WIDTH, HEIGHT)
-        self.obs_circle = self.obs_circle()
-        self.obs_rectangle = self.obs_rectangle()
+    def __init__(self, width=20.0, height=20.0, resolution=0.1):
+        self.width = width
+        self.height = height
+        self.resolution = resolution  # meters per cell
+        self.x_range = (0, width)
+        self.y_range = (0, height)
+        self.obs_boundary = self.set_obs_boundary(width, height)
+        self.obs_circle = self.set_obs_circle()
+        self.obs_rectangle = self.set_obs_rectangle()
+        self._discretize_map()
+
+    def _discretize_map(self):
+        self.grid_width = int(self.width / self.resolution)
+        self.grid_height = int(self.height / self.resolution)
+
+    def get_map_shape(self):
+        return (self.grid_height, self.grid_width)
+
+    def continuous_to_grid(self, x, y):
+        grid_x = int(x / self.resolution)
+        grid_y = int(y / self.resolution)
+        return grid_x, grid_y
+
+    def grid_to_continuous(self, grid_x, grid_y):
+        x = grid_x * self.resolution + self.resolution / 2
+        y = grid_y * self.resolution + self.resolution / 2
+        return x, y
 
     @staticmethod
-    def obs_boundary(width, height):  # circle
+    def set_obs_boundary(width, height):  # circle
         w = width
         h = height
         linewidth = 0.1
@@ -36,7 +42,7 @@ class Env:
         return obs_boundary
 
     @staticmethod
-    def obs_rectangle():
+    def set_obs_rectangle():
         # obs_rectangle = [
         #     [14, 12, 8, 2],
         #     [18, 22, 8, 3],
@@ -46,20 +52,6 @@ class Env:
         obs_rectangle = []
         return obs_rectangle
     @staticmethod
-    def obs_circle():
-        if type == 1:
-            obs_cir = [
-                [10, 10, 2],
-                [10, 15, 2],
-                [10, 20, 2],
-                [10, 25, 2],
-                [20, 3, 2],
-                [20, 8, 2],
-                [20, 13, 2],
-                [20, 18, 2],
-                [30, 5, 2],
-                [30, 10, 2]
-            ]
-        if type == 2:
-            obs_cir = []
+    def set_obs_circle():
+        obs_cir = []
         return obs_cir
