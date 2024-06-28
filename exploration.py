@@ -9,8 +9,6 @@ from algorithms.co_scan import CoScanPlanner
 from utils import plotting
 from utils import env
 
-import cv2
-
 """
 Created on June 22nd, 2024
 @author: Taekyung Kim
@@ -213,9 +211,8 @@ class ExplorationManager:
         np_obstacle_map = self.get_obstacle_map()
         np_frontier_map = self.get_frontier_map()
         #cv2.imshow('frontier', (np_frontier_map * 255).astype(np.uint8))
-        cv2.imshow('obstacle', (np_obstacle_map * 255).astype(np.uint8))
-        #cv2.imshow('obstacle', np_obstacle_map, cmap='gray')   
-        cv2.waitKey(10)
+        #cv2.imshow('obstacle', (np_obstacle_map * 255).astype(np.uint8))
+        #cv2.waitKey(10)
 
         agent_positions = self.get_robot_positions()
         global_goals =self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions)
@@ -240,13 +237,23 @@ class ExplorationManager:
                 grid_x, grid_y = self.env_handler.f_to_grid(point)
                 obstacle_map[grid_y, grid_x] = 1
         return obstacle_map
-
+    
     def get_frontier_map(self):
         frontier_map = np.zeros(self.env_handler.get_map_shape(), dtype=np.int8)
-        # TODO: this for loop can be vectorized
-        for x, y in self.frontiers.coords:
-            x, y = self.env_handler.f_to_grid([x, y])
-            frontier_map[int(y), int(x)] = 1
+        if len(self.frontiers.coords) == 0:
+            return frontier_map
+
+        frontier_points = np.array(self.frontiers.coords)
+        grid_points = self.env_handler.f_to_grid(frontier_points)
+        
+        # Ensure all points are within the map bounds
+        height, width = self.env_handler.get_map_shape()
+        mask = (grid_points[:, 0] >= 0) & (grid_points[:, 0] < width) & \
+               (grid_points[:, 1] >= 0) & (grid_points[:, 1] < height)
+        grid_points = grid_points[mask]
+        
+        # Set frontier points to 1 in the frontier map
+        frontier_map[grid_points[:, 1], grid_points[:, 0]] = 1
         return frontier_map
 
     def get_robot_positions(self):
