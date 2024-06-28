@@ -2,10 +2,14 @@ import numpy as np
 from shapely.ops import unary_union
 from shapely.geometry import Polygon, MultiPolygon, Point, LineString
 
+import matplotlib.pyplot as plt
+
 from tracking import LocalTrackingController
 from algorithms.co_scan import CoScanPlanner
 from utils import plotting
 from utils import env
+
+import cv2
 
 """
 Created on June 22nd, 2024
@@ -208,17 +212,33 @@ class ExplorationManager:
     def update_global_goals(self):
         np_obstacle_map = self.get_obstacle_map()
         np_frontier_map = self.get_frontier_map()
+        #cv2.imshow('frontier', (np_frontier_map * 255).astype(np.uint8))
+        cv2.imshow('obstacle', (np_obstacle_map * 255).astype(np.uint8))
+        #cv2.imshow('obstacle', np_obstacle_map, cmap='gray')   
+        cv2.waitKey(10)
+
         agent_positions = self.get_robot_positions()
         global_goals =self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions)
         return self.env_handler.grid_to_f(global_goals)
 
     def get_obstacle_map(self):
         obstacle_map = np.zeros(self.env_handler.get_map_shape(), dtype=np.int8)
-        # FIXME:
-        # for geom in self.env_obstacles.geoms:
-        #     x, y = geom.exterior.coords.xy
-        #     rr, cc = polygon(y, x)
-        #     obstacle_map[rr, cc] = 1
+        
+        # Get the map dimensions
+        height, width = self.env_handler.get_map_shape()
+        
+        # Create a grid of points
+        y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
+        grid_points = np.column_stack((x.ravel(), y.ravel()))
+        
+        # Convert grid points to continuous space
+        cont_points = self.env_handler.grid_to_f(grid_points)
+        
+        # Check each point if it's inside any obstacle
+        for point in cont_points:
+            if self.env_obstacles.contains(Point(point)):
+                grid_x, grid_y = self.env_handler.f_to_grid(point)
+                obstacle_map[grid_y, grid_x] = 1
         return obstacle_map
 
     def get_frontier_map(self):
