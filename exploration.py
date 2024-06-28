@@ -15,11 +15,10 @@ Created on June 22nd, 2024
 
 @functions to be implemented: 
     An Exploration class
-        1. can handle multiple agents by setting up multiple controllers
-        2. manage the global map
-        3. extract the global frontier
+        1. correctly assign frontier as goal
+        2. assign global goal at every iterations? or just assign it after it reaches the goal?
 
-@required-scripts: tracking.py
+@required-scripts: tracking.py, utils/plotting.py, utils/env.py, algorithms/co_scan.py
 """
 
 class ExplorationManager:
@@ -132,17 +131,53 @@ class ExplorationManager:
             boundaries = [poly.exterior for poly in self.merged_global_map.geoms]
         else:
             raise ValueError(f"Unexpected type for merged_global_map: {type(self.merged_global_map)}")
-
-        # Extract frontiers (boundary points not inside obstacles and within workspace)
+        
         frontiers = []
         for boundary in boundaries:
-            for point in boundary.coords:
-                point_geom = Point(point)
-                if self.env_workspace.contains(point_geom) and not self.env_obstacles.contains(point_geom):
-                    frontiers.append(point)
+            coords = np.array(boundary.coords)
+            frontiers.extend(self.interpolate_and_filter_frontier(coords))
 
         return LineString(frontiers)  # Return frontiers as a LineString
-    
+
+    def interpolate_and_filter_frontier(self, coords, step=0.3):
+        '''
+        @description: Vectorized interpolation between points and checking if interpolated points are valid frontiers
+        @note: shapely object's exterior only contains the boundary points, so we need to interpolate between them
+        '''
+        # Calculate distances between consecutive points
+        diff = np.diff(coords, axis=0)
+        distances = np.sqrt((diff**2).sum(axis=1))
+        
+        # Calculate number of steps for each segment
+        steps = np.maximum(np.ceil(distances / step).astype(int), 1)
+        
+        # Generate interpolation parameters
+        cum_steps = np.cumsum(steps)
+        total_steps = cum_steps[-1]
+        
+        indices = np.arange(total_steps)
+        segment_indices = np.searchsorted(cum_steps, indices, side='right')
+        
+        # Correct calculation of segment_steps
+        segment_starts = np.concatenate(([0], cum_steps[:-1]))
+        segment_steps = indices - segment_starts[segment_indices]
+        
+        # Ensure alphas are calculated correctly
+        steps_broadcast = steps[segment_indices]
+        alphas = segment_steps / steps_broadcast
+
+        # Interpolate points
+        start_points = coords[segment_indices]
+        end_points = coords[segment_indices + 1]
+        
+        interpolated_points = start_points + alphas[:, np.newaxis] * (end_points - start_points)
+        
+        # Check validity of interpolated points
+        valid_mask = np.array([self.env_workspace.contains(Point(p)) and not self.env_obstacles.contains(Point(p)) 
+                            for p in interpolated_points])
+        
+        return interpolated_points[valid_mask]
+
     def control_step(self):
         '''
         Simulate one control step and compute frontiers for all robots
@@ -235,7 +270,7 @@ def main():
         [2, 2, math.pi/2],
         [2, 12, 0],
         [10, 12, 0],
-        [20, 2, 0]
+        [15, 2, 0]
     ]
     waypoints = np.array(waypoints, dtype=np.float64)
     x_init = waypoints[0]
