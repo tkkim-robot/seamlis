@@ -11,6 +11,10 @@ Created on June 20th, 2024
 @author: Taekyung Kim
 
 @description: 
+This code implements a local tracking controller for 2D robot navigation using Control Barrier Functions (CBF) and Quadratic Programming (QP).
+It supports both kinematic (Unicycle2D) and dynamic (DynamicUnicycle2D) unicycle models, with functionality for obstacle avoidance and waypoint following.
+The controller includes real-time visualization capabilities and can handle both known and unknown obstacles.
+The main functions demonstrate single and multi-agent scenarios, showcasing the controller's ability to navigate complex environments.
 
 @required-scripts: robots/robot.py
 """
@@ -26,9 +30,10 @@ class QPError(Exception):
 
 
 class LocalTrackingController:
-    def __init__(self, X0, type='DynamicUnicycle2D', dt=0.05,
+    def __init__(self, X0, type='DynamicUnicycle2D', robot_id=0, dt=0.05,
                   show_animation=False, save_animation=False, ax=None, fig=None, env=None):
         self.type = type
+        self.robot_id = robot_id # robot id = 1 has the plot handler
         self.dt = dt
 
         self.current_goal_index = 0  # Index of the current goal in the path
@@ -79,7 +84,7 @@ class LocalTrackingController:
 
     def setup_robot(self, X0):
         from robots.robot import BaseRobot
-        self.robot = BaseRobot(X0.reshape(-1, 1), self.dt, self.ax, self.type)
+        self.robot = BaseRobot(X0.reshape(-1, 1), self.dt, self.ax, self.type, self.robot_id)
 
     def setup_control_problem(self):
         self.u = cp.Variable((2, 1))
@@ -99,6 +104,8 @@ class LocalTrackingController:
         self.cbf_controller = cp.Problem(objective, constraints)
 
     def set_waypoints(self, waypoints):
+        if type(waypoints) == list:
+            waypoints = np.array(waypoints, dtype=float)
         self.waypoints = waypoints
         self.current_goal_index = 0
         if self.show_animation:
@@ -152,14 +159,28 @@ class LocalTrackingController:
         '''
         Update the goal from waypoints
         '''
+        # Check if all waypoints are reached;
+        if self.current_goal_index >= len(self.waypoints):
+            return None
+        
         if self.goal_reached(self.robot.X, np.array(self.waypoints[self.current_goal_index]).reshape(-1, 1)):
             self.current_goal_index += 1
-            # Check if all waypoints are reached;
+
             if self.current_goal_index >= len(self.waypoints):
                 print("All waypoints reached.")
                 return None
+
         goal = np.array(self.waypoints[self.current_goal_index][0:2]) # set goal to next waypoint's (x,y)
         return goal
+    
+    def draw_plot(self, pause=0.01):
+        if self.show_animation:
+            self.fig.canvas.draw()
+            plt.pause(pause)
+            if self.save_animation and self.ani_idx % self.save_per_frame == 0:
+                plt.savefig(self.current_directory_path +
+                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
+                self.ani_idx += 1
 
     def control_step(self):
         '''
@@ -172,8 +193,6 @@ class LocalTrackingController:
         '''
 
         goal = self.update_goal()
-        if goal is None:
-            return -1
 
         # 1. Update the detected obstacles
         detected_obs = self.robot.detect_unknown_obs(self.unknown_obs)
@@ -194,7 +213,10 @@ class LocalTrackingController:
             self.b1.value[0,:] = dh_dot_dx @ self.robot.f() + (self.alpha1+self.alpha2) * h_dot + self.alpha1*self.alpha2*h
 
         # 3. Compuite nominal control input, pre-defined in the robot class
-        self.u_ref.value = self.robot.nominal_input(goal)
+        if goal is None:
+            self.u_ref.value = self.robot.stop()
+        else:
+            self.u_ref.value = self.robot.nominal_input(goal)
 
          # 4. Solve this yields a new `self.u``
         self.cbf_controller.solve(solver=cp.GUROBI, reoptimize=True)
@@ -206,12 +228,7 @@ class LocalTrackingController:
                 self.robot.render_plot()
                 current_position = self.robot.X[:2].flatten()
                 self.ax.text(current_position[0]+0.5, current_position[1]+0.5, '!', color='red', weight='bold', fontsize=22)
-                self.fig.canvas.draw()
-                plt.pause(5)
-
-            if self.save_animation:
-                plt.savefig(self.current_directory_path +
-                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
+                self.draw_plot(pause=5)
             raise QPError
 
         # 6. Step the robot
@@ -227,14 +244,8 @@ class LocalTrackingController:
         if beyond_flag and self.show_animation:
             print("Visibility Violation")
 
-        if self.show_animation:
-            self.fig.canvas.draw()
-            plt.pause(0.01)
-            if self.save_animation and self.ani_idx % self.save_per_frame == 0:
-                plt.savefig(self.current_directory_path +
-                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
-                self.ani_idx += 1
-
+        if goal is None:
+            return -1 # all waypoints reached
         return beyond_flag
     
     def run_all_steps(self, tf=30):
@@ -245,6 +256,7 @@ class LocalTrackingController:
 
         for _ in range(int(tf / self.dt)):
             ret = self.control_step()
+            self.draw_plot()
             unexpected_beh += ret
             if ret == -1: # all waypoints reached
                 break
@@ -283,10 +295,9 @@ def single_agent_main():
     waypoints = np.array(waypoints, dtype=np.float64)
 
     x_init = waypoints[0]
-    x_goal = waypoints[-1]
 
-    plot_handler = plotting.Plotting(x_init, x_goal)
-    plot_handler = plotting.Plotting(x_init, x_goal)
+    plot_handler = plotting.Plotting()
+    plot_handler = plotting.Plotting()
     ax, fig = plot_handler.plot_grid("Local Tracking Controller")
     env_handler = env.Env()
 
@@ -318,19 +329,23 @@ def multi_agent_main():
     x_init = waypoints[0]
     x_goal = waypoints[-1]
 
-    plot_handler = plotting.Plotting(x_init, x_goal)
+    plot_handler = plotting.Plotting()
     ax, fig = plot_handler.plot_grid("Local Tracking Controller")
     env_handler = env.Env()
 
     #type = 'Unicycle2D'
     type = 'DynamicUnicycle2D'
-    controller_1 = LocalTrackingController(x_init, type=type, dt=dt,
+    controller_0 = LocalTrackingController(x_init, type=type, 
+                                         robot_id=0,
+                                         dt=dt,
                                          show_animation=True,
                                          save_animation=False,
                                          ax=ax, fig=fig,
                                          env=env_handler)
     
-    controller_2 = LocalTrackingController(x_goal, type=type, dt=dt,
+    controller_1 = LocalTrackingController(x_goal, type=type,
+                                         robot_id=1,
+                                         dt=dt,
                                          show_animation=True,
                                          save_animation=False,
                                          ax=ax, fig=fig,
@@ -338,12 +353,17 @@ def multi_agent_main():
 
     # unknown_obs = np.array([[9.0, 8.8, 0.3]]) 
     # tracking_controller.set_unknown_obs(unknown_obs)
-    controller_1.set_waypoints(waypoints)
-    controller_2.set_waypoints(waypoints[::-1])
-    tf = 30
+    controller_0.set_waypoints(waypoints)
+    controller_1.set_waypoints(waypoints[::-1])
+    tf = 50
     for _ in range(int(tf / dt)):
-        _ = controller_1.control_step()
-        _ = controller_2.control_step()
+        ret_list = []
+        ret_list.append(controller_0.control_step())
+        ret_list.append(controller_1.control_step())
+        controller_0.draw_plot()
+        # if all elements of ret_list are -1, break
+        if all([ret == -1 for ret in ret_list]):
+            break
             
 
 if __name__ == "__main__":

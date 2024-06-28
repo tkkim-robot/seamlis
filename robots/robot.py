@@ -3,13 +3,27 @@ import matplotlib.pyplot as plt
 
 from shapely.geometry import Polygon, Point, LineString
 
+"""
+Created on June 21st, 2024
+@author: Taekyung Kim
+
+@description: 
+This code implements a BaseRobot class for 2D robot simulation with unicycle dynamics.
+It includes functionalities for robot movement, FoV visualization, obstacle detection, and safety area calculation (maximum braking distance).
+The class supports both kinematic (Unicycle2D) and dynamic (DynamicUnicycle2D) unicycle models.
+It incorporates Control Barrier Function (CBF) constraints for obstacle avoidance, which can be used as within a CBF-QP formulation.
+The main function demonstrates the robot's movement towards a goal while avoiding an obstacle, visualizing the process in real-time.
+
+@required-scripts: robots/unicycle2D.py, robots/dynamic_unicycle2D.py
+"""
+
 def angle_normalize(x):
     return (((x + np.pi) % (2 * np.pi)) - np.pi)
 
 
 class BaseRobot:
     
-    def __init__(self,X0,dt,ax,type='Unicycle2D'):
+    def __init__(self, X0, dt, ax, type='Unicycle2D', robot_id=0):
         '''
         X0: iniytial state
         dt: simulation time step
@@ -17,6 +31,11 @@ class BaseRobot:
         '''
         
         self.type = type
+        self.robot_id = robot_id
+
+        colors = plt.get_cmap('Pastel1').colors # color palette
+        color = colors[robot_id % len(colors) + 1]
+
         self.test_type = 'gatekeeper' # or 'cbf_qp'
         if type == 'Unicycle2D':
             try:
@@ -49,7 +68,7 @@ class BaseRobot:
         # Plot handles
         self.vis_orient_len = 0.3
         # Robot's body represented as a scatter plot
-        self.body = ax.scatter([],[],s=60,facecolors='b',edgecolors='b') #facecolors='none'
+        self.body = ax.scatter([], [], s=200, facecolors=color, edgecolors=color) #facecolors='none'
         # Store the unsafe points and scatter plot
         self.unsafe_points = []
         self.unsafe_points_handle = ax.scatter([],[],s=40,facecolors='r',edgecolors='r')
@@ -59,7 +78,7 @@ class BaseRobot:
         self.fov, = ax.plot([], [], 'k--')  # Unpack the tuple returned by plot
         # Initialize FOV fill handle with placeholder data
         self.fov_fill = ax.fill([], [], 'k', alpha=0.1)[0]  # Access the first element
-        self.sensing_footprints_fill = ax.fill([], [], 'b', alpha=0.1)[0]  # Access the first element
+        self.sensing_footprints_fill = ax.fill([], [], color=color, alpha=0.4)[0]  # Access the first element
         self.safety_area_fill = ax.fill([], [], 'r', alpha=0.3)[0]  
 
         self.detected_obs = None
@@ -71,8 +90,11 @@ class BaseRobot:
         self.positions = []  # List to store the positions for plotting
 
         # initialize the sensing_footprints with the initial robot location with radius 1 
-        init_robot_position = Point(self.X[0, 0], self.X[1, 0]).buffer(1)
+        init_robot_position = Point(self.X[0, 0], self.X[1, 0]).buffer(0.1)
         self.sensing_footprints = self.sensing_footprints.union(init_robot_position)
+    
+    def get_position(self):
+        return self.X[0:2].reshape(-1)
     
     def f(self):
         return self.robot.f(self.X)
@@ -82,6 +104,9 @@ class BaseRobot:
     
     def nominal_input(self, goal, d_min=0.05):
         return self.robot.nominal_input(self.X, goal, d_min)
+
+    def stop(self):
+        return self.robot.stop(self.X)
     
     def agent_barrier(self, obs):
         return self.robot.agent_barrier(self.X, obs, self.robot_radius)
@@ -219,7 +244,6 @@ class BaseRobot:
             intersected_area = self.sensing_footprints.intersection(obs_circle)
 
             # Check each point on the intersected area's exterior
-
             points = []
             if intersected_area.geom_type == 'Polygon':
                 for point in intersected_area.exterior.coords:

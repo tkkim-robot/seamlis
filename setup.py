@@ -10,7 +10,8 @@ setup(
         'numpy==1.26.4',  # latest gurobipy version 11.0.2 is not compatible with numpy 2.0, but 11.0.3 will be
         'matplotlib',
         'gurobipy',
-        'shapely'
+        'shapely',
+        'scikit-fmm'
     ],
     include_package_data=True,
     zip_safe=False,

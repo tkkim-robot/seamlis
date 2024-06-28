@@ -58,6 +58,12 @@ class DynamicUnicycle2D:
         #print(f"CBF nominal acc: {accel}, omega:{omega}")
         return np.array([accel, omega]).reshape(-1,1)
     
+    def stop(self, X, k_a = 1.0):
+        # set desired velocity to zero
+        v = 0.0
+        accel = k_a * ( v - X[3,0] )
+        return np.array([accel,0]).reshape(-1,1)
+    
     def agent_barrier(self, X, obs, robot_radius):
         obsX = obs[0:2]
         d_min = obs[2][0] + robot_radius # obs radius + robot radius
