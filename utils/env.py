@@ -1,6 +1,6 @@
-
+import numpy as np
 class Env:
-    def __init__(self, width=20.0, height=20.0, resolution=0.1):
+    def __init__(self, width=50.0, height=5.0, resolution=0.1):
         self.width = width
         self.height = height
         self.resolution = resolution  # meters per cell
@@ -27,6 +27,32 @@ class Env:
         x = grid_x * self.resolution + self.resolution / 2
         y = grid_y * self.resolution + self.resolution / 2
         return x, y
+    
+    def f_to_grid(self, points):
+        points = np.array(points)
+        original_shape = points.shape
+        
+        if points.ndim == 1:
+            points = points.reshape(1, -1)
+        
+        grid_points = (points / self.resolution).astype(int)
+        
+        if original_shape == (2,):
+            return grid_points[0]  # Return a 1D array for a single input point
+        return grid_points
+
+    def grid_to_f(self, grid_points):
+        grid_points = np.array(grid_points)
+        original_shape = grid_points.shape
+        
+        if grid_points.ndim == 1:
+            grid_points = grid_points.reshape(1, -1)
+        
+        points = (grid_points * self.resolution) + (self.resolution / 2)
+        
+        if original_shape == (2,):
+            return points[0]  # Return a 1D array for a single input point
+        return points
 
     @staticmethod
     def set_obs_boundary(width, height):  # circle

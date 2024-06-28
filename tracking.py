@@ -104,6 +104,8 @@ class LocalTrackingController:
         self.cbf_controller = cp.Problem(objective, constraints)
 
     def set_waypoints(self, waypoints):
+        if type(waypoints) == list:
+            waypoints = np.array(waypoints, dtype=float)
         self.waypoints = waypoints
         self.current_goal_index = 0
         if self.show_animation:

@@ -90,8 +90,11 @@ class BaseRobot:
         self.positions = []  # List to store the positions for plotting
 
         # initialize the sensing_footprints with the initial robot location with radius 1 
-        init_robot_position = Point(self.X[0, 0], self.X[1, 0]).buffer(1)
+        init_robot_position = Point(self.X[0, 0], self.X[1, 0]).buffer(0.1)
         self.sensing_footprints = self.sensing_footprints.union(init_robot_position)
+    
+    def get_position(self):
+        return self.X[0:2].reshape(-1)
     
     def f(self):
         return self.robot.f(self.X)
