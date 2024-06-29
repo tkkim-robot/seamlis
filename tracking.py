@@ -75,6 +75,7 @@ class LocalTrackingController:
             self.ax.set_xlabel("X")
             self.ax.set_ylabel("Y")
             self.ax.set_aspect(1)
+            self.waypoints_scatter = self.ax.scatter([],[],s=10,facecolors='g',edgecolors='g', alpha=0.5)
         else:
             self.ax = plt.axes() # dummy placeholder
 
@@ -109,7 +110,8 @@ class LocalTrackingController:
         self.waypoints = waypoints
         self.current_goal_index = 0
         if self.show_animation:
-            self.ax.scatter(waypoints[:, 0], waypoints[:, 1], c='g', s=10)
+            self.waypoints_scatter.set_offsets(waypoints[:, :2])
+            
 
     def goal_reached(self, current_position, goal_position):
         return np.linalg.norm(current_position[:2] - goal_position[:2]) < self.reached_threshold
