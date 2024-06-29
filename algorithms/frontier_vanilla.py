@@ -4,9 +4,9 @@ from scipy.optimize import linear_sum_assignment
 
 from algorithms.kmeans import kmeans
 
-# Global Policy - implementation of "Multi-robot collaborative dense scene reconstruction"
+# Global Policy - implementation of the vanilla frontier exploration (greedy)
 
-class CoScanPlanner:
+class FrontierPlanner:
     def __init__(self):
         self.global_goals = None
         
@@ -34,11 +34,11 @@ class CoScanPlanner:
                 dd_mask[:] = False
             else:
                 dd_mask &= dd.mask
-        np_frontier_map[dd_mask] = 0 # remove unreachable frontiers
+        np_frontier_map[dd_mask] = 0
 
-        # cluster_center is in [y, x] order
+        # Perform k-means clustering on frontier points
         cluster_center, nearest_clusters, is_frontier, frontier_idx = kmeans(np_obstacle_map, np_frontier_map, num_agent)
-        # nearest_clusters: (n_frontier,)
+        
         if cluster_center is None:
             self.global_goals = [None] * num_agent
             return self.global_goals
@@ -49,40 +49,25 @@ class CoScanPlanner:
         cost = np.hstack([cost] * ((num_agent - 1) // nc + 1))
         row_ind, col_ind = linear_sum_assignment(cost)
 
+        # Select goals for each agent
         self.global_goals = np.zeros((num_agent, 2), dtype=np.int32)
         for i in range(num_agent):
             cluster_idx = col_ind[i] % nc
             agent_idx = row_ind[i]
-            frontier_dist = np_obstacle_map_distance[agent_idx][is_frontier]
-            frontier_dist[nearest_clusters != cluster_idx] = np.inf # only consider frontiers in the assigned cluster
-            select = np.argmin(frontier_dist)
-            # return goal in [x, y] order
-            self.global_goals[agent_idx] = [frontier_idx[1][select], frontier_idx[0][select]]
+            
+            # Find the furthest frontier point in the assigned cluster
+            # neareast_clusters: (n_frontier,) -> ex) [0, 1, 2, 0, 1, ...]  if there are three clusters
+            cluster_frontiers = (nearest_clusters == cluster_idx)
+
+            if np.any(cluster_frontiers):
+                frontier_distances = np_obstacle_map_distance[agent_idx][frontier_idx[0][cluster_frontiers], frontier_idx[1][cluster_frontiers]]
+                furthest_frontier_idx = np.argmax(frontier_distances)
+                furthest_frontier = np.where(cluster_frontiers)[0][furthest_frontier_idx]
+                
+                # Set goal in [x, y] order
+                self.global_goals[agent_idx] = [frontier_idx[1][furthest_frontier], frontier_idx[0][furthest_frontier]]
+            else:
+                # If no frontiers in the cluster, stay at current position
+                self.global_goals[agent_idx] = agent_pos[agent_idx]
 
         return self.global_goals
-
-    def replan(self, np_obstacle_map, np_frontier_map, goal, planning_window):
-        # goal: [x,y]
-        gx1, gx2, gy1, gy2 = planning_window
-        np_obstacle_map = np.ma.masked_values(np_obstacle_map, 1)
-        np_obstacle_map[goal[1], goal[0]] = 1
-        dd = skfmm.distance(1 - np_obstacle_map)[gy1:gy2, gx1:gx2]
-        dd[np_frontier_map[gy1:gy2, gx1:gx2] == 0] = np.inf
-        goal = np.unravel_index(np.argmin(dd), dd.shape)
-        return goal[0], goal[1]
-
-    def check_finish(self, np_frontier_map, stop):
-        if len([1 for goal in self.global_goals if goal is not None]) == 1:
-            self.global_goals = None
-            return True
-        for goal, stopped in zip(self.global_goals, stop):
-            if goal is None:
-                continue
-            if stopped:
-                stopped = False
-                self.global_goals = None
-                return True
-            elif np_frontier_map[goal[1], goal[0]] == 0:
-                self.global_goals = None
-                return True
-        return False

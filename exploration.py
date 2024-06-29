@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 
 from tracking import LocalTrackingController
 from algorithms.co_scan import CoScanPlanner
+from algorithms.frontier_vanilla import FrontierPlanner
 from utils import plotting
 from utils import env
 
@@ -24,7 +25,7 @@ Created on June 22nd, 2024
 """
 
 class ExplorationManager:
-    def __init__(self, X0s, type='DynamicUnicycle2D', exploration_algorithm='CoScan',
+    def __init__(self, X0s, type='DynamicUnicycle2D', exploration_algorithm='Frontier',
                   num_robot=1, dt=0.05,
                   show_animation=False, save_animation=False):
         self.type = type
@@ -61,6 +62,8 @@ class ExplorationManager:
 
         if exploration_algorithm == 'CoScan':
             self.exploration_algorithm = CoScanPlanner()
+        elif exploration_algorithm == 'Frontier':
+            self.exploration_algorithm = FrontierPlanner()
         else:
             raise ValueError(f"Exploration algorithm {exploration_algorithm} is not implemented")
 
