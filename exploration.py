@@ -59,6 +59,7 @@ class ExplorationManager:
         # Set up the environment
         self.set_env_obstacles(self.env_handler)
         self.set_env_workspace(self.env_handler)
+        self.robot_goals = [None] * self.num_robot
 
         if exploration_algorithm == 'CoScan':
             self.exploration_algorithm = CoScanPlanner()
@@ -142,6 +143,9 @@ class ExplorationManager:
             coords = np.array(boundary.coords)
             frontiers.extend(self.interpolate_and_filter_frontier(coords))
 
+        if not frontiers:
+            return LineString()
+
         return LineString(frontiers)  # Return frontiers as a LineString
 
     def interpolate_and_filter_frontier(self, coords, step=0.3):
@@ -183,32 +187,58 @@ class ExplorationManager:
         
         return interpolated_points[valid_mask]
 
-    def control_step(self):
-        '''
-        Simulate one control step and compute frontiers for all robots
-        '''
-        for controller in self.controller_list:
-            controller.control_step()
-        self.frontiers = self.get_frontiers()
-        if self.show_animation:
-            self.frontiers_scatter.set_offsets(self.frontiers.coords)
-            self.controller_list[0].draw_plot()
-
     def explore(self):
         '''
-        Main exploration loop
+        Main exploration loop with goal-based updates
         '''
-        self.frontiers = self.get_frontiers() # initially get frontiers
+        self.frontiers = self.get_frontiers()  # initially get frontiers
+        self.update_all_goals()  # Initial goal assignment for all robots
 
         while not self.exploration_complete():
-            self.global_goals = self.update_global_goals()
-            print(self.global_goals)
+            robots_reached_goals = self.move_robots()
+            
+            if any(robots_reached_goals):
+                self.frontiers = self.get_frontiers()  # Update frontiers
+                self.update_goals_for_completed(robots_reached_goals)
+            
             if self.show_animation:
-                self.global_goals_scatter.set_offsets(self.global_goals)
-            for i, controller in enumerate(self.controller_list):
-                controller.set_waypoints([self.global_goals[i]]) # assign a single waypoint as goal
-            self.control_step()
-            #self.replan_if_necessary()
+                self.update_visualization()
+
+    def update_all_goals(self):
+        '''
+        Initially assign goals to all robots (later, goal assignment is asychronous)
+        '''
+        self.global_goals = self.update_global_goals()
+        for i, controller in enumerate(self.controller_list):
+            self.robot_goals[i] = self.global_goals[i]
+            controller.set_waypoints([self.global_goals[i]])
+        
+        if self.show_animation:
+            self.global_goals_scatter.set_offsets(self.global_goals)
+
+    def move_robots(self):
+        '''
+        Move all robots and return a list indicating which robots have reached their goals
+        '''
+        robots_reached_goals = [False] * self.num_robot
+        for i, controller in enumerate(self.controller_list):
+            controller.control_step()
+            if controller.has_reached_goal():
+                robots_reached_goals[i] = True
+        return robots_reached_goals
+
+    def update_goals_for_completed(self, robots_reached_goals):
+        '''
+        Asynchronously update goals only for robots that have reached their goals
+        '''
+        new_global_goals = self.update_global_goals()
+        for i, reached in enumerate(robots_reached_goals):
+            if reached: #only update goals with goal-reached robots
+                self.robot_goals[i] = new_global_goals[i]
+                self.controller_list[i].set_waypoints([new_global_goals[i]])
+        
+        if self.show_animation:
+            self.global_goals_scatter.set_offsets(self.robot_goals)
 
     def update_global_goals(self):
         np_obstacle_map = self.get_obstacle_map()
@@ -263,37 +293,20 @@ class ExplorationManager:
         positions = np.array([controller.robot.get_position() for controller in self.controller_list])
         return self.env_handler.f_to_grid(positions)
 
-    def replan_if_necessary(self):
-        for i, controller in enumerate(self.controller_list):
-            current_goal = controller.get_current_goal()
-            if self.goal_unreachable(current_goal):
-                new_goal = self.exploration_algorithm.replan(
-                    self.get_obstacle_map(),
-                    self.get_frontier_map(),
-                    current_goal,
-                    self.get_planning_window(controller)
-                )
-                controller.set_goal(new_goal)
-
-    def goal_unreachable(self, goal):
-        obstacle_map = self.get_obstacle_map()
-        return obstacle_map[int(goal[1]), int(goal[0])] == 1
-
-    def get_planning_window(self, controller):
-        pos = controller.robot.get_position()
-        window_size = 20  # Adjust as needed
-        x1 = max(0, int(pos[0]) - window_size)
-        x2 = min(self.env_handler.width, int(pos[0]) + window_size)
-        y1 = max(0, int(pos[1]) - window_size)
-        y2 = min(self.env_handler.height, int(pos[1]) + window_size)
-        return (x1, x2, y1, y2)
+    def update_visualization(self):
+        '''
+        Update visualization elements
+        '''
+        self.frontiers_scatter.set_offsets(self.frontiers.coords)
+        self.controller_list[0].draw_plot()
 
     def exploration_complete(self):
+        print( len(self.frontiers.coords))
         return len(self.frontiers.coords) == 0
         
 
 def main():
-    dt = 0.5
+    dt = 2.5
 
     # temporal
     waypoints = [

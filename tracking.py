@@ -82,6 +82,7 @@ class LocalTrackingController:
         # Setup control problem
         self.setup_robot(X0)
         self.setup_control_problem()
+        self.goal = None
 
     def setup_robot(self, X0):
         from robots.robot import BaseRobot
@@ -111,10 +112,13 @@ class LocalTrackingController:
         self.current_goal_index = 0
         if self.show_animation:
             self.waypoints_scatter.set_offsets(waypoints[:, :2])
-            
 
     def goal_reached(self, current_position, goal_position):
         return np.linalg.norm(current_position[:2] - goal_position[:2]) < self.reached_threshold
+    
+    def has_reached_goal(self):
+        # return whethere the self.goal is None or not
+        return self.goal is None
 
     def set_unknown_obs(self, unknown_obs):
         # set initially
@@ -169,7 +173,6 @@ class LocalTrackingController:
             self.current_goal_index += 1
 
             if self.current_goal_index >= len(self.waypoints):
-                print("All waypoints reached.")
                 return None
 
         goal = np.array(self.waypoints[self.current_goal_index][0:2]) # set goal to next waypoint's (x,y)
@@ -194,7 +197,7 @@ class LocalTrackingController:
             - raise QPError: if the QP is infeasible or the robot collides with the obstacle
         '''
 
-        goal = self.update_goal()
+        self.goal = self.update_goal()
 
         # 1. Update the detected obstacles
         detected_obs = self.robot.detect_unknown_obs(self.unknown_obs)
@@ -215,10 +218,10 @@ class LocalTrackingController:
             self.b1.value[0,:] = dh_dot_dx @ self.robot.f() + (self.alpha1+self.alpha2) * h_dot + self.alpha1*self.alpha2*h
 
         # 3. Compuite nominal control input, pre-defined in the robot class
-        if goal is None:
+        if self.goal is None:
             self.u_ref.value = self.robot.stop()
         else:
-            self.u_ref.value = self.robot.nominal_input(goal)
+            self.u_ref.value = self.robot.nominal_input(self.goal)
 
          # 4. Solve this yields a new `self.u``
         self.cbf_controller.solve(solver=cp.GUROBI, reoptimize=True)
@@ -246,7 +249,7 @@ class LocalTrackingController:
         if beyond_flag and self.show_animation:
             print("Visibility Violation")
 
-        if goal is None:
+        if self.goal is None:
             return -1 # all waypoints reached
         return beyond_flag
     

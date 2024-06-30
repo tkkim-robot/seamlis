@@ -23,6 +23,9 @@ class FrontierPlanner:
         np_frontier_map = np.copy(np_frontier_map)
         np_obstacle_map_distance = []
 
+        # clip agnet_pos to the map size
+        agent_pos = np.clip(agent_pos, [0, 0], [np_obstacle_map.shape[1] - 1, np_obstacle_map.shape[0] - 1])
+
         # Compute distance maps and mask unreachable areas
         dd_mask = np.ones(np_obstacle_map.shape, dtype=bool)
         for i in range(num_agent):
