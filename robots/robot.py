@@ -60,8 +60,8 @@ class BaseRobot:
         self.cam_range = 3.0  # [m]
 
         self.robot_radius = 0.25 # including padding
-        self.max_decel = 0.5 # [m/s^2]
-        self.max_ang_decel = 0.25  # [rad/s^2]
+        self.max_decel = 3.0 #0.5 # [m/s^2]
+        self.max_ang_decel = 3.0 #0.25  # [rad/s^2]
 
         self.U = np.array([0,0]).reshape(-1,1)
         
@@ -140,7 +140,11 @@ class BaseRobot:
         self.fov_fill.set_xy(np.array([fov_x_points, fov_y_points]).T)  # Update the vertices of the polygon
 
         if not self.sensing_footprints.is_empty:
-            sensing_footprints_x, sensing_footprints_y = self.sensing_footprints.exterior.xy
+            if self.sensing_footprints.geom_type == 'Polygon':
+                sensing_footprints_x, sensing_footprints_y = self.sensing_footprints.exterior.xy
+            elif self.safety_area.geom_type == 'MultiPolygon':
+                sensing_footprints_x = [x for poly in self.sensing_footprints.geoms for x in poly.exterior.xy[0]]
+                sensing_footprints_y = [y for poly in self.sensing_footprints.geoms for y in poly.exterior.xy[1]]
             self.sensing_footprints_fill.set_xy(np.array([sensing_footprints_x, sensing_footprints_y]).T)  # Update the vertices of the polygon
             #ax.fill(sensing_footprints_x, sensing_footprints_y, alpha=0.1, fc='r', ec='none')
         if not self.safety_area.is_empty:

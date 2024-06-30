@@ -203,6 +203,7 @@ class ExplorationManager:
             
             if self.show_animation:
                 self.update_visualization()
+        print("Exploration complete!")
 
     def update_all_goals(self):
         '''
@@ -232,13 +233,14 @@ class ExplorationManager:
         Asynchronously update goals only for robots that have reached their goals
         '''
         new_global_goals = self.update_global_goals()
-        for i, reached in enumerate(robots_reached_goals):
-            if reached: #only update goals with goal-reached robots
-                self.robot_goals[i] = new_global_goals[i]
-                self.controller_list[i].set_waypoints([new_global_goals[i]])
-        
-        if self.show_animation:
-            self.global_goals_scatter.set_offsets(self.robot_goals)
+        if new_global_goals is not None:
+            for i, reached in enumerate(robots_reached_goals):
+                if reached: #only update goals with goal-reached robots
+                    self.robot_goals[i] = new_global_goals[i]
+                    self.controller_list[i].set_waypoints([new_global_goals[i]])
+            
+            if self.show_animation:
+                self.global_goals_scatter.set_offsets(self.robot_goals)
 
     def update_global_goals(self):
         np_obstacle_map = self.get_obstacle_map()
@@ -248,7 +250,10 @@ class ExplorationManager:
         #cv2.waitKey(10)
 
         agent_positions = self.get_robot_positions()
-        global_goals =self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions)
+        global_goals = self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions)
+        # if any of the goals is None, return None for all goals (exploration is complete)
+        if any(goal is None for goal in global_goals):
+            return None
         return self.env_handler.grid_to_f(global_goals)
 
     def get_obstacle_map(self):
@@ -306,7 +311,7 @@ class ExplorationManager:
         
 
 def main():
-    dt = 2.5
+    dt = 1.0
 
     # temporal
     waypoints = [
