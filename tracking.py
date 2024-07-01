@@ -212,7 +212,7 @@ class LocalTrackingController:
             plt.pause(pause)
             if self.save_animation and self.ani_idx % self.save_per_frame == 0:
                 plt.savefig(self.current_directory_path +
-                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
+                            "/output/animations/" + "t_step_" + str(self.ani_idx//self.save_per_frame).zfill(4) + ".png")
             self.ani_idx += 1
 
     def control_step(self):
@@ -291,6 +291,22 @@ class LocalTrackingController:
             return -1 # all waypoints reached
         return beyond_flag
     
+    def export_video(self):
+        # convert the image sequence to a video
+        if self.show_animation and self.save_animation:
+            print("Files in directory:")
+            print(os.listdir(self.current_directory_path + "/output/animations/"))
+            subprocess.call(['ffmpeg',
+                 '-framerate', '30',  # Input framerate (adjust if needed)
+                 '-i', self.current_directory_path+"/output/animations/t_step_%04d.png",
+                 '-filter:v', 'fps=60',  # Output framerate
+                 '-pix_fmt', 'yuv420p',
+                 self.current_directory_path+"/output/animations/tracking.mp4"])
+
+            for file_name in glob.glob(self.current_directory_path +
+                            "/output/animations/*.png"):
+                os.remove(file_name)
+    
     def run_all_steps(self, tf=30):
         print("===================================")
         print("============ Tracking =============")
@@ -304,18 +320,7 @@ class LocalTrackingController:
             if ret == -1: # all waypoints reached
                 break
             
-            
-        # convert the image sequence to a video
-        if self.show_animation and self.save_animation:
-            subprocess.call(['ffmpeg',
-                            '-i', self.current_directory_path+"/output/animations/" + "/t_step_%01d.png",
-                            '-r', '60',  # Changes the output FPS to 30
-                            '-pix_fmt', 'yuv420p',
-                            self.current_directory_path+"/output/animations/tracking.mp4"])
-
-            for file_name in glob.glob(self.current_directory_path +
-                            "/output/animations/*.png"):
-                os.remove(file_name)
+        self.export_video()
 
         print("=====   Tracking finished    =====")
         print("===================================\n")

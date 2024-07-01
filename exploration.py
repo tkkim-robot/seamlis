@@ -201,7 +201,7 @@ class ExplorationManager:
         self.update_all_goals()  # Initial goal assignment for all robots
         if self.show_animation:
             self.update_visualization()
-
+            
         while not self.exploration_complete():
             robots_reached_goals = self.move_robots()
             
@@ -211,6 +211,8 @@ class ExplorationManager:
             
             if self.show_animation:
                 self.update_visualization()
+        if self.save_animation:
+            self.controller_list[0].export_video()
         print("Exploration complete!")
 
     def update_all_goals(self):
