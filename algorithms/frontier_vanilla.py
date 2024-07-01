@@ -83,7 +83,7 @@ class FrontierPlanner:
                     selected_frontier = frontier_coords[in_fov][fov_frontier_idx]
                 else:
                     # If no frontiers in FOV, select the furthest frontier
-                    furthest_frontier_idx = np.argmax(distances)
+                    furthest_frontier_idx = np.argmin(distances)
                     selected_frontier = frontier_coords[furthest_frontier_idx]
 
                 # Set goal in [x, y] order

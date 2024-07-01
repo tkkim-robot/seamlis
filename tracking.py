@@ -109,11 +109,16 @@ class LocalTrackingController:
         self.cbf_controller = cp.Problem(objective, constraints)
 
     def set_waypoints(self, waypoints):
-        self.state_machine = 'stop'
         if type(waypoints) == list:
             waypoints = np.array(waypoints, dtype=float)
         self.waypoints = self.filter_waypoints(waypoints)
         self.current_goal_index = 0
+
+        self.goal = self.update_goal()
+        if self.goal is not None and not self.robot.is_in_fov(self.goal):
+            self.state_machine = 'stop'
+            self.goal = None # let the robot stop then rotate
+
         if self.show_animation:
             self.waypoints_scatter.set_offsets(self.waypoints[:, :2])
 

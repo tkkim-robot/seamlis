@@ -338,6 +338,18 @@ class BaseRobot:
         fov_right = (self.X[0,0] + self.cam_range * np.cos(angle_right), self.X[1,0] + self.cam_range * np.sin(angle_right))
 
         return fov_left, fov_right
+    
+    def is_in_fov(self, point):
+        robot_pos = self.X[:2].flatten()
+        robot_orientation = self.X[2, 0]
+
+        to_point = point - robot_pos
+        angle_to_point = np.arctan2(to_point[1], to_point[0])
+        angle_diff = abs(angle_normalize(angle_to_point - robot_orientation))
+
+        # Check if goal is within FOV
+        return angle_diff <= self.fov_angle / 2 and np.linalg.norm(to_point) <= self.cam_range
+
         
 if __name__ == "__main__":
 
