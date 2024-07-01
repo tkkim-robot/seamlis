@@ -7,7 +7,6 @@ def custom_merge(geometries):
     union = unary_union(geometries)
     
     # If the result is a MultiPolygon, we need to process each polygon
-    print(union.geom_type)
     if isinstance(union, MultiPolygon):
         processed_polygons = [process_polygon(poly, geometries) for poly in union.geoms]
         merged_polygon =  MultiPolygon(processed_polygons)

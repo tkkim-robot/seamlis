@@ -213,7 +213,7 @@ class LocalTrackingController:
             if self.save_animation and self.ani_idx % self.save_per_frame == 0:
                 plt.savefig(self.current_directory_path +
                             "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
-                self.ani_idx += 1
+            self.ani_idx += 1
 
     def control_step(self):
         '''
