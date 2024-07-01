@@ -150,9 +150,8 @@ class ExplorationManager:
                 coords = np.array(hole.coords)
                 frontiers.extend(self.interpolate_and_filter_frontier(coords))
 
-        if not frontiers:
+        if not frontiers or len(frontiers) == 1: # a single frontier point is negligible
             return LineString()
-
         return LineString(frontiers)  # Return frontiers as a LineString
 
     def interpolate_and_filter_frontier(self, coords, step=0.3):
@@ -339,7 +338,7 @@ def main():
     type = 'DynamicUnicycle2D'
     exploration = ExplorationManager([x_init,x_init2], type=type, num_robot=2, dt=dt,
                                     show_animation=True,
-                                    save_animation=False)
+                                    save_animation=True)
     exploration.explore()
     # to check the set_waypoints function
         # exploration.set_waypoints(0, waypoints)
