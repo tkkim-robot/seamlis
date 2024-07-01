@@ -35,10 +35,8 @@ class Unicycle2D:
         X[2,0] = angle_normalize(X[2,0])
         return X
 
-    def nominal_input(self, X, G, d_min = 0.05):
+    def nominal_input(self, X, G, d_min = 0.05, k_omega = 2.0, k_v = 1.0):
         G = np.copy(G.reshape(-1,1)) # goal state
-        k_v = 1.0 # 1.5 #0.5
-        k_omega = 2.0 #2.5 #2.0 
         distance = max(np.linalg.norm( X[0:2,0]-G[0:2,0] ) - d_min, 0.05) #1.5)
         theta_d = np.arctan2(G[1,0]-X[1,0],G[0,0]-X[0,0])
         error_theta = angle_normalize( theta_d - X[2,0] )
@@ -53,6 +51,15 @@ class Unicycle2D:
     
     def stop(self, X):
         return np.array([0,0]).reshape(-1,1)
+    
+    def has_stopped(self, X):
+        # unicycle can always stop immediately
+        return True
+
+    def rotate_to(self, X, theta, k_omega = 2.0):
+        error_theta = angle_normalize( theta - X[2,0] )
+        omega = k_omega * error_theta
+        return np.array([0.0, omega]).reshape(-1,1)
     
     def sigma(self,s):
         #print("s", s)

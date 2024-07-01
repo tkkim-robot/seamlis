@@ -36,6 +36,9 @@ class LocalTrackingController:
         self.robot_id = robot_id # robot id = 1 has the plot handler
         self.dt = dt
 
+        self.state_machine = 'idle'  # Can be 'idle', 'track', 'stop', 'rotate'
+        self.rotation_threshold = 0.1  # Radians
+
         self.current_goal_index = 0  # Index of the current goal in the path
         self.reached_threshold = 1.0
 
@@ -75,12 +78,14 @@ class LocalTrackingController:
             self.ax.set_xlabel("X")
             self.ax.set_ylabel("Y")
             self.ax.set_aspect(1)
+            self.waypoints_scatter = self.ax.scatter([],[],s=10,facecolors='g',edgecolors='g', alpha=0.5)
         else:
             self.ax = plt.axes() # dummy placeholder
 
         # Setup control problem
         self.setup_robot(X0)
         self.setup_control_problem()
+        self.goal = None
 
     def setup_robot(self, X0):
         from robots.robot import BaseRobot
@@ -104,15 +109,33 @@ class LocalTrackingController:
         self.cbf_controller = cp.Problem(objective, constraints)
 
     def set_waypoints(self, waypoints):
+        self.state_machine = 'stop'
         if type(waypoints) == list:
             waypoints = np.array(waypoints, dtype=float)
-        self.waypoints = waypoints
+        self.waypoints = self.filter_waypoints(waypoints)
         self.current_goal_index = 0
         if self.show_animation:
-            self.ax.scatter(waypoints[:, 0], waypoints[:, 1], c='g', s=10)
+            self.waypoints_scatter.set_offsets(self.waypoints[:, :2])
 
+    def filter_waypoints(self, waypoints):
+        '''
+        Initially filter out waypoints that are too close to the robot
+        '''
+        if len(waypoints) < 2:
+            return waypoints
+        
+        distances = np.linalg.norm(np.diff(waypoints[:, :2], axis=0), axis=1)
+        mask = np.concatenate(([True], distances >= self.reached_threshold))
+        return waypoints[mask]
+    
     def goal_reached(self, current_position, goal_position):
         return np.linalg.norm(current_position[:2] - goal_position[:2]) < self.reached_threshold
+    
+    def has_reached_goal(self):
+        # return whethere the self.goal is None or not
+        if self.state_machine in ['stop']:
+            return False
+        return self.goal is None
 
     def set_unknown_obs(self, unknown_obs):
         # set initially
@@ -159,6 +182,16 @@ class LocalTrackingController:
         '''
         Update the goal from waypoints
         '''
+        if self.state_machine == 'rotate':
+            # in-place rotation
+            current_angle = self.robot.X[2, 0]
+            goal_angle = np.arctan2(self.waypoints[0][1] - self.robot.X[1, 0],
+                                    self.waypoints[0][0] - self.robot.X[0, 0])
+            if abs(current_angle - goal_angle) > self.rotation_threshold:
+                return self.waypoints[0][:2]
+            else:
+                self.state_machine = 'track'
+            
         # Check if all waypoints are reached;
         if self.current_goal_index >= len(self.waypoints):
             return None
@@ -167,7 +200,7 @@ class LocalTrackingController:
             self.current_goal_index += 1
 
             if self.current_goal_index >= len(self.waypoints):
-                print("All waypoints reached.")
+                self.state_machine = 'idle'
                 return None
 
         goal = np.array(self.waypoints[self.current_goal_index][0:2]) # set goal to next waypoint's (x,y)
@@ -179,8 +212,8 @@ class LocalTrackingController:
             plt.pause(pause)
             if self.save_animation and self.ani_idx % self.save_per_frame == 0:
                 plt.savefig(self.current_directory_path +
-                            "/output/animations/" + "t_step_" + str(self.ani_idx) + ".png")
-                self.ani_idx += 1
+                            "/output/animations/" + "t_step_" + str(self.ani_idx//self.save_per_frame).zfill(4) + ".png")
+            self.ani_idx += 1
 
     def control_step(self):
         '''
@@ -191,8 +224,13 @@ class LocalTrackingController:
             - 1: visibility violation
             - raise QPError: if the QP is infeasible or the robot collides with the obstacle
         '''
-
-        goal = self.update_goal()
+        # update state machine
+        if self.state_machine == 'stop':
+            if self.robot.has_stopped():
+                self.state_machine = 'rotate'
+                self.goal = self.update_goal()
+        else:
+            self.goal = self.update_goal()
 
         # 1. Update the detected obstacles
         detected_obs = self.robot.detect_unknown_obs(self.unknown_obs)
@@ -213,10 +251,14 @@ class LocalTrackingController:
             self.b1.value[0,:] = dh_dot_dx @ self.robot.f() + (self.alpha1+self.alpha2) * h_dot + self.alpha1*self.alpha2*h
 
         # 3. Compuite nominal control input, pre-defined in the robot class
-        if goal is None:
+        if self.state_machine == 'rotate':
+            goal_angle = np.arctan2(self.goal[1] - self.robot.X[1, 0],
+                                    self.goal[0] - self.robot.X[0, 0])
+            self.u_ref.value = self.robot.rotate_to(goal_angle)
+        elif self.goal is None:
             self.u_ref.value = self.robot.stop()
         else:
-            self.u_ref.value = self.robot.nominal_input(goal)
+            self.u_ref.value = self.robot.nominal_input(self.goal)
 
          # 4. Solve this yields a new `self.u``
         self.cbf_controller.solve(solver=cp.GUROBI, reoptimize=True)
@@ -242,11 +284,26 @@ class LocalTrackingController:
 
         beyond_flag = self.robot.is_beyond_sensing_footprints()
         if beyond_flag and self.show_animation:
-            print("Visibility Violation")
+            pass
+            #print("Visibility Violation")
 
-        if goal is None:
+        if self.goal is None:
             return -1 # all waypoints reached
         return beyond_flag
+    
+    def export_video(self):
+        # convert the image sequence to a video
+        if self.show_animation and self.save_animation:
+            subprocess.call(['ffmpeg',
+                 '-framerate', '30',  # Input framerate (adjust if needed)
+                 '-i', self.current_directory_path+"/output/animations/t_step_%04d.png",
+                 '-filter:v', 'fps=60',  # Output framerate
+                 '-pix_fmt', 'yuv420p',
+                 self.current_directory_path+"/output/animations/tracking.mp4"])
+
+            for file_name in glob.glob(self.current_directory_path +
+                            "/output/animations/*.png"):
+                os.remove(file_name)
     
     def run_all_steps(self, tf=30):
         print("===================================")
@@ -261,18 +318,7 @@ class LocalTrackingController:
             if ret == -1: # all waypoints reached
                 break
             
-            
-        # convert the image sequence to a video
-        if self.show_animation and self.save_animation:
-            subprocess.call(['ffmpeg',
-                            '-i', self.current_directory_path+"/output/animations/" + "/t_step_%01d.png",
-                            '-r', '60',  # Changes the output FPS to 30
-                            '-pix_fmt', 'yuv420p',
-                            self.current_directory_path+"/output/animations/tracking.mp4"])
-
-            for file_name in glob.glob(self.current_directory_path +
-                            "/output/animations/*.png"):
-                os.remove(file_name)
+        self.export_video()
 
         print("=====   Tracking finished    =====")
         print("===================================\n")

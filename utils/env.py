@@ -1,6 +1,6 @@
 import numpy as np
 class Env:
-    def __init__(self, width=50.0, height=5.0, resolution=0.1):
+    def __init__(self, width=20.0, height=20.0, resolution=0.1):
         self.width = width
         self.height = height
         self.resolution = resolution  # meters per cell
@@ -17,26 +17,16 @@ class Env:
 
     def get_map_shape(self):
         return (self.grid_height, self.grid_width)
-
-    def continuous_to_grid(self, x, y):
-        grid_x = int(x / self.resolution)
-        grid_y = int(y / self.resolution)
-        return grid_x, grid_y
-
-    def grid_to_continuous(self, grid_x, grid_y):
-        x = grid_x * self.resolution + self.resolution / 2
-        y = grid_y * self.resolution + self.resolution / 2
-        return x, y
     
     def f_to_grid(self, points):
         points = np.array(points)
         original_shape = points.shape
-        
+
         if points.ndim == 1:
             points = points.reshape(1, -1)
-        
+
         grid_points = (points / self.resolution).astype(int)
-        
+
         if original_shape == (2,):
             return grid_points[0]  # Return a 1D array for a single input point
         return grid_points
@@ -44,12 +34,12 @@ class Env:
     def grid_to_f(self, grid_points):
         grid_points = np.array(grid_points)
         original_shape = grid_points.shape
-        
+
         if grid_points.ndim == 1:
             grid_points = grid_points.reshape(1, -1)
-        
+
         points = (grid_points * self.resolution) + (self.resolution / 2)
-        
+
         if original_shape == (2,):
             return points[0]  # Return a 1D array for a single input point
         return points
@@ -75,9 +65,11 @@ class Env:
         #     [26, 7, 2, 12],
         #     [32, 14, 10, 2]
         # ]
+        obs_rectangle = [[5, 5, 10, 10]]
         obs_rectangle = []
         return obs_rectangle
     @staticmethod
     def set_obs_circle():
+        obs_cir = [[18, 18, 1]]
         obs_cir = []
         return obs_cir
