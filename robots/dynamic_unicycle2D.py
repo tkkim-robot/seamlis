@@ -64,6 +64,14 @@ class DynamicUnicycle2D:
         accel = k_a * ( v - X[3,0] )
         return np.array([accel,0]).reshape(-1,1)
     
+    def has_stopped(self, X, tol = 0.01):
+        return np.linalg.norm(X[3,0]) < tol
+    
+    def rotate_to(self, X, theta, k_omega = 2.0):
+        error_theta = angle_normalize( theta - X[2,0] )
+        omega = k_omega * error_theta
+        return np.array([0.0, omega]).reshape(-1,1)
+    
     def agent_barrier(self, X, obs, robot_radius):
         obsX = obs[0:2]
         d_min = obs[2][0] + robot_radius # obs radius + robot radius

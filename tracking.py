@@ -36,6 +36,9 @@ class LocalTrackingController:
         self.robot_id = robot_id # robot id = 1 has the plot handler
         self.dt = dt
 
+        self.state_machine = 'idle'  # Can be 'idle', 'track', 'stop', 'rotate'
+        self.rotation_threshold = 0.1  # Radians
+
         self.current_goal_index = 0  # Index of the current goal in the path
         self.reached_threshold = 1.0
 
@@ -106,13 +109,25 @@ class LocalTrackingController:
         self.cbf_controller = cp.Problem(objective, constraints)
 
     def set_waypoints(self, waypoints):
+        self.state_machine = 'stop'
         if type(waypoints) == list:
             waypoints = np.array(waypoints, dtype=float)
-        self.waypoints = waypoints
+        self.waypoints = self.filter_waypoints(waypoints)
         self.current_goal_index = 0
         if self.show_animation:
-            self.waypoints_scatter.set_offsets(waypoints[:, :2])
+            self.waypoints_scatter.set_offsets(self.waypoints[:, :2])
 
+    def filter_waypoints(self, waypoints):
+        '''
+        Initially filter out waypoints that are too close to the robot
+        '''
+        if len(waypoints) < 2:
+            return waypoints
+        
+        distances = np.linalg.norm(np.diff(waypoints[:, :2], axis=0), axis=1)
+        mask = np.concatenate(([True], distances >= self.reached_threshold))
+        return waypoints[mask]
+    
     def goal_reached(self, current_position, goal_position):
         return np.linalg.norm(current_position[:2] - goal_position[:2]) < self.reached_threshold
     
@@ -165,6 +180,14 @@ class LocalTrackingController:
         '''
         Update the goal from waypoints
         '''
+        if self.state_machine == 'rotate':
+            # in-place rotation
+            current_angle = self.robot.X[2, 0]
+            goal_angle = np.arctan2(self.waypoints[0][1] - self.robot.X[1, 0],
+                                    self.waypoints[0][0] - self.robot.X[0, 0])
+            if abs(current_angle - goal_angle) < self.rotation_threshold:
+                self.state_machine = 'track'
+            return self.waypoints[0][:2]
         # Check if all waypoints are reached;
         if self.current_goal_index >= len(self.waypoints):
             return None
@@ -173,6 +196,7 @@ class LocalTrackingController:
             self.current_goal_index += 1
 
             if self.current_goal_index >= len(self.waypoints):
+                self.state_machine = 'idle'
                 return None
 
         goal = np.array(self.waypoints[self.current_goal_index][0:2]) # set goal to next waypoint's (x,y)
@@ -196,8 +220,12 @@ class LocalTrackingController:
             - 1: visibility violation
             - raise QPError: if the QP is infeasible or the robot collides with the obstacle
         '''
-
-        self.goal = self.update_goal()
+        # update state machine
+        if self.state_machine == 'stop':
+            if self.robot.has_stopped():
+                self.state_machine = 'rotate'
+        else:
+            self.goal = self.update_goal()
 
         # 1. Update the detected obstacles
         detected_obs = self.robot.detect_unknown_obs(self.unknown_obs)
@@ -218,7 +246,11 @@ class LocalTrackingController:
             self.b1.value[0,:] = dh_dot_dx @ self.robot.f() + (self.alpha1+self.alpha2) * h_dot + self.alpha1*self.alpha2*h
 
         # 3. Compuite nominal control input, pre-defined in the robot class
-        if self.goal is None:
+        if self.state_machine == 'rotate':
+            goal_angle = np.arctan2(self.goal[1] - self.robot.X[1, 0],
+                                    self.goal[0] - self.robot.X[0, 0])
+            self.u_ref.value = self.robot.rotate_to(goal_angle)
+        elif self.goal is None:
             self.u_ref.value = self.robot.stop()
         else:
             self.u_ref.value = self.robot.nominal_input(self.goal)

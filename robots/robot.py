@@ -108,6 +108,12 @@ class BaseRobot:
     def stop(self):
         return self.robot.stop(self.X)
     
+    def has_stopped(self):
+        return self.robot.has_stopped(self.X)
+    
+    def rotate_to(self, theta):
+        return self.robot.rotate_to(self.X, theta)
+    
     def agent_barrier(self, obs):
         return self.robot.agent_barrier(self.X, obs, self.robot_radius)
 
