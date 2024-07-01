@@ -64,7 +64,7 @@ class ExplorationManager:
         if exploration_algorithm == 'CoScan':
             self.exploration_algorithm = CoScanPlanner()
         elif exploration_algorithm == 'Frontier':
-            self.exploration_algorithm = FrontierPlanner()
+            self.exploration_algorithm = FrontierPlanner(fov_angle=self.controller_list[0].robot.fov_angle)
         else:
             raise ValueError(f"Exploration algorithm {exploration_algorithm} is not implemented")
 
@@ -193,6 +193,8 @@ class ExplorationManager:
         '''
         self.frontiers = self.get_frontiers()  # initially get frontiers
         self.update_all_goals()  # Initial goal assignment for all robots
+        if self.show_animation:
+            self.update_visualization()
 
         while not self.exploration_complete():
             robots_reached_goals = self.move_robots()
@@ -250,7 +252,8 @@ class ExplorationManager:
         #cv2.waitKey(10)
 
         agent_positions = self.get_robot_positions()
-        global_goals = self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions)
+        agent_orientations = self.get_robot_orientations()
+        global_goals = self.exploration_algorithm.get_long_term_goals(np_obstacle_map, np_frontier_map, agent_positions, agent_orientations)
         # if any of the goals is None, return None for all goals (exploration is complete)
         if any(goal is None for goal in global_goals):
             return None
@@ -297,6 +300,10 @@ class ExplorationManager:
     def get_robot_positions(self):
         positions = np.array([controller.robot.get_position() for controller in self.controller_list])
         return self.env_handler.f_to_grid(positions)
+    
+    def get_robot_orientations(self):
+        orientations = np.array([controller.robot.get_orientation() for controller in self.controller_list])
+        return orientations
 
     def update_visualization(self):
         '''
@@ -306,12 +313,11 @@ class ExplorationManager:
         self.controller_list[0].draw_plot()
 
     def exploration_complete(self):
-        print( len(self.frontiers.coords))
         return len(self.frontiers.coords) == 0
         
 
 def main():
-    dt = 1.0
+    dt = 0.5
 
     # temporal
     waypoints = [

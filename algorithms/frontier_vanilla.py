@@ -7,10 +7,11 @@ from algorithms.kmeans import kmeans
 # Global Policy - implementation of the vanilla frontier exploration (greedy)
 
 class FrontierPlanner:
-    def __init__(self):
+    def __init__(self, fov_angle=90, fov_margin=20):
         self.global_goals = None
+        self.fov_angle = fov_angle + np.deg2rad(fov_margin) # prioritize frontiers in the front
         
-    def get_long_term_goals(self, np_obstacle_map, np_frontier_map, agent_pos):
+    def get_long_term_goals(self, np_obstacle_map, np_frontier_map, agent_pos, agent_orientations):
         '''
         Compute long-term goals for agents using vanilla frontier exploration (greedy)
         
@@ -63,12 +64,37 @@ class FrontierPlanner:
             cluster_frontiers = (nearest_clusters == cluster_idx)
 
             if np.any(cluster_frontiers):
-                frontier_distances = np_obstacle_map_distance[agent_idx][frontier_idx[0][cluster_frontiers], frontier_idx[1][cluster_frontiers]]
-                furthest_frontier_idx = np.argmax(frontier_distances)
-                furthest_frontier = np.where(cluster_frontiers)[0][furthest_frontier_idx]
-                
+                frontier_coords = np.column_stack((frontier_idx[1][cluster_frontiers], frontier_idx[0][cluster_frontiers]))
+                agent_pos_2d = agent_pos[agent_idx][:2]
+                agent_orientation = agent_orientations[agent_idx]
+
+                # Calculate relative angles and distances
+                relative_angles = np.arctan2(frontier_coords[:, 1] - agent_pos_2d[1],
+                                             frontier_coords[:, 0] - agent_pos_2d[0]) - agent_orientation
+                relative_angles = (relative_angles + np.pi) % (2 * np.pi) - np.pi  #angle normalize
+                distances = np_obstacle_map_distance[agent_idx][frontier_idx[0][cluster_frontiers], frontier_idx[1][cluster_frontiers]]
+
+                # Check which frontiers are within the FOV
+                in_fov = np.abs(relative_angles) <= (self.fov_angle / 2)
+
+                if np.any(in_fov):
+                    # Select the frontier with the smallest relative angle within FOV
+                    fov_frontier_idx = np.argmin(np.abs(relative_angles[in_fov]))
+                    selected_frontier = frontier_coords[in_fov][fov_frontier_idx]
+                else:
+                    # If no frontiers in FOV, select the furthest frontier
+                    furthest_frontier_idx = np.argmax(distances)
+                    selected_frontier = frontier_coords[furthest_frontier_idx]
+
                 # Set goal in [x, y] order
-                self.global_goals[agent_idx] = [frontier_idx[1][furthest_frontier], frontier_idx[0][furthest_frontier]]
+                self.global_goals[agent_idx] = selected_frontier
+
+                # 
+                # furthest_frontier_idx = np.argmax(frontier_distances)
+                # furthest_frontier = np.where(cluster_frontiers)[0][furthest_frontier_idx]
+                
+                # # Set goal in [x, y] order
+                # self.global_goals[agent_idx] = [frontier_idx[1][furthest_frontier], frontier_idx[0][furthest_frontier]]
             else:
                 # If no frontiers in the cluster, stay at current position
                 self.global_goals[agent_idx] = agent_pos[agent_idx]

@@ -96,6 +96,9 @@ class BaseRobot:
     def get_position(self):
         return self.X[0:2].reshape(-1)
     
+    def get_orientation(self):
+        return self.X[2, 0]
+    
     def f(self):
         return self.robot.f(self.X)
     
