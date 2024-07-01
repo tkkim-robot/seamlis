@@ -88,13 +88,6 @@ class FrontierPlanner:
 
                 # Set goal in [x, y] order
                 self.global_goals[agent_idx] = selected_frontier
-
-                # 
-                # furthest_frontier_idx = np.argmax(frontier_distances)
-                # furthest_frontier = np.where(cluster_frontiers)[0][furthest_frontier_idx]
-                
-                # # Set goal in [x, y] order
-                # self.global_goals[agent_idx] = [frontier_idx[1][furthest_frontier], frontier_idx[0][furthest_frontier]]
             else:
                 # If no frontiers in the cluster, stay at current position
                 self.global_goals[agent_idx] = agent_pos[agent_idx]
