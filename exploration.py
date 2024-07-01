@@ -9,6 +9,7 @@ from algorithms.co_scan import CoScanPlanner
 from algorithms.frontier_vanilla import FrontierPlanner
 from utils import plotting
 from utils import env
+from utils.geometry import custom_merge
 
 """
 Created on June 22nd, 2024
@@ -124,7 +125,7 @@ class ExplorationManager:
             all_footprints.append(robot_footprints)
 
         # Merge all footprints using shapely's unary_union
-        return unary_union(all_footprints)
+        return custom_merge(all_footprints)
 
     def get_frontiers(self):
         '''
@@ -133,8 +134,10 @@ class ExplorationManager:
         self.merged_global_map = self.merge_sensing_footprints()
         if isinstance(self.merged_global_map, Polygon):
             boundaries = [self.merged_global_map.exterior]
+            interiors = [self.merged_global_map.interiors]
         elif isinstance(self.merged_global_map, MultiPolygon):
             boundaries = [poly.exterior for poly in self.merged_global_map.geoms]
+            interiors = [poly.interiors for poly in self.merged_global_map.geoms]
         else:
             raise ValueError(f"Unexpected type for merged_global_map: {type(self.merged_global_map)}")
         
@@ -142,6 +145,10 @@ class ExplorationManager:
         for boundary in boundaries:
             coords = np.array(boundary.coords)
             frontiers.extend(self.interpolate_and_filter_frontier(coords))
+        for interior in interiors:
+            for hole in interior:
+                coords = np.array(hole.coords)
+                frontiers.extend(self.interpolate_and_filter_frontier(coords))
 
         if not frontiers:
             return LineString()

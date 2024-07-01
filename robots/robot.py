@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from shapely.geometry import Polygon, Point, LineString
+from shapely import is_valid_reason
+from utils.geometry import custom_merge
 
 """
 Created on June 21st, 2024
@@ -151,9 +153,11 @@ class BaseRobot:
         if not self.sensing_footprints.is_empty:
             if self.sensing_footprints.geom_type == 'Polygon':
                 sensing_footprints_x, sensing_footprints_y = self.sensing_footprints.exterior.xy
-            elif self.safety_area.geom_type == 'MultiPolygon':
+            elif self.sensing_footprints.geom_type == 'MultiPolygon':
                 sensing_footprints_x = [x for poly in self.sensing_footprints.geoms for x in poly.exterior.xy[0]]
                 sensing_footprints_y = [y for poly in self.sensing_footprints.geoms for y in poly.exterior.xy[1]]
+            else:
+                print("Invalid sensing_footprints geometry type: ", self.sensing_footprints.geom_type)
             self.sensing_footprints_fill.set_xy(np.array([sensing_footprints_x, sensing_footprints_y]).T)  # Update the vertices of the polygon
             #ax.fill(sensing_footprints_x, sensing_footprints_y, alpha=0.1, fc='r', ec='none')
         if not self.safety_area.is_empty:
@@ -174,7 +178,9 @@ class BaseRobot:
         robot_position = (self.X[0, 0], self.X[1, 0])
         new_area = Polygon([robot_position, fov_left, fov_right])
     
-        self.sensing_footprints = self.sensing_footprints.union(new_area).simplify(0.3)
+        #self.sensing_footprints = self.sensing_footprints.union(new_area).simplify(0.3)
+        self.sensing_footprints = custom_merge([self.sensing_footprints, new_area]).simplify(0.1)
+        print(is_valid_reason(self.sensing_footprints))
         #self.sensing_footprints = self.sensing_footprints.simplify(0.1)
 
     def update_safety_area(self):
