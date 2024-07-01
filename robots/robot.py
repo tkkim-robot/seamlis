@@ -151,15 +151,8 @@ class BaseRobot:
         self.fov_fill.set_xy(np.array([fov_x_points, fov_y_points]).T)  # Update the vertices of the polygon
 
         if not self.sensing_footprints.is_empty:
-            if self.sensing_footprints.geom_type == 'Polygon':
-                sensing_footprints_x, sensing_footprints_y = self.sensing_footprints.exterior.xy
-            elif self.sensing_footprints.geom_type == 'MultiPolygon':
-                sensing_footprints_x = [x for poly in self.sensing_footprints.geoms for x in poly.exterior.xy[0]]
-                sensing_footprints_y = [y for poly in self.sensing_footprints.geoms for y in poly.exterior.xy[1]]
-            else:
-                print("Invalid sensing_footprints geometry type: ", self.sensing_footprints.geom_type)
-            self.sensing_footprints_fill.set_xy(np.array([sensing_footprints_x, sensing_footprints_y]).T)  # Update the vertices of the polygon
-            #ax.fill(sensing_footprints_x, sensing_footprints_y, alpha=0.1, fc='r', ec='none')
+            xs, ys = self.process_sensing_footprints_visualization()
+            self.sensing_footprints_fill.set_xy(np.array([xs, ys]).T)  # Update the vertices of the polygon
         if not self.safety_area.is_empty:
             if self.safety_area.geom_type == 'Polygon':
                 safety_x, safety_y = self.safety_area.exterior.xy
@@ -173,6 +166,40 @@ class BaseRobot:
         if len(self.detected_points) > 0:
             self.detected_points_scatter.set_offsets(np.array(self.detected_points))
     
+    def process_sensing_footprints_visualization(self):
+        '''
+        Compute the exterior and interior coordinates and process to be used in fill method
+        '''
+        def get_polygon_coordinates(poly):
+            '''
+            Use None as a separator between exterior and interior coordinates (built-in API in matplotlib's fill)
+            '''
+            ext_x, ext_y = poly.exterior.xy
+            coordinates = list(zip(ext_x, ext_y)) + [(None, None)]  # Add None to create a break
+            for interior in poly.interiors:
+                int_x, int_y = interior.xy
+                coordinates.extend(list(zip(int_x, int_y)) + [(None, None)])
+            return coordinates
+
+        if self.sensing_footprints.geom_type == 'Polygon':
+            coordinates = get_polygon_coordinates(self.sensing_footprints)
+        elif self.sensing_footprints.geom_type == 'MultiPolygon':
+            coordinates = []
+            for poly in self.sensing_footprints.geoms:
+                coordinates.extend(get_polygon_coordinates(poly))
+        else:
+            print("Invalid sensing_footprints geometry type: ", self.sensing_footprints.geom_type)
+            return
+
+        # Remove the last None if it exists
+        if coordinates and coordinates[-1] == (None, None):
+            coordinates.pop()
+
+        # Separate x and y coordinates
+        x, y = zip(*coordinates)
+        return x, y
+
+
     def update_sensing_footprints(self):
         fov_left, fov_right = self.calculate_fov_points()
         robot_position = (self.X[0, 0], self.X[1, 0])
