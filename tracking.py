@@ -133,6 +133,8 @@ class LocalTrackingController:
     
     def has_reached_goal(self):
         # return whethere the self.goal is None or not
+        if self.state_machine in ['stop']:
+            return False
         return self.goal is None
 
     def set_unknown_obs(self, unknown_obs):
@@ -185,9 +187,11 @@ class LocalTrackingController:
             current_angle = self.robot.X[2, 0]
             goal_angle = np.arctan2(self.waypoints[0][1] - self.robot.X[1, 0],
                                     self.waypoints[0][0] - self.robot.X[0, 0])
-            if abs(current_angle - goal_angle) < self.rotation_threshold:
+            if abs(current_angle - goal_angle) > self.rotation_threshold:
+                return self.waypoints[0][:2]
+            else:
                 self.state_machine = 'track'
-            return self.waypoints[0][:2]
+            
         # Check if all waypoints are reached;
         if self.current_goal_index >= len(self.waypoints):
             return None
@@ -224,6 +228,7 @@ class LocalTrackingController:
         if self.state_machine == 'stop':
             if self.robot.has_stopped():
                 self.state_machine = 'rotate'
+                self.goal = self.update_goal()
         else:
             self.goal = self.update_goal()
 
@@ -279,7 +284,8 @@ class LocalTrackingController:
 
         beyond_flag = self.robot.is_beyond_sensing_footprints()
         if beyond_flag and self.show_animation:
-            print("Visibility Violation")
+            pass
+            #print("Visibility Violation")
 
         if self.goal is None:
             return -1 # all waypoints reached
