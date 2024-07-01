@@ -294,8 +294,6 @@ class LocalTrackingController:
     def export_video(self):
         # convert the image sequence to a video
         if self.show_animation and self.save_animation:
-            print("Files in directory:")
-            print(os.listdir(self.current_directory_path + "/output/animations/"))
             subprocess.call(['ffmpeg',
                  '-framerate', '30',  # Input framerate (adjust if needed)
                  '-i', self.current_directory_path+"/output/animations/t_step_%04d.png",
