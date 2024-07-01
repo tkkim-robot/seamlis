@@ -179,8 +179,8 @@ class BaseRobot:
         new_area = Polygon([robot_position, fov_left, fov_right])
     
         #self.sensing_footprints = self.sensing_footprints.union(new_area).simplify(0.3)
-        self.sensing_footprints = custom_merge([self.sensing_footprints, new_area]).simplify(0.1)
-        print(is_valid_reason(self.sensing_footprints))
+        self.sensing_footprints = custom_merge([self.sensing_footprints, new_area]).simplify(0.3)
+        #print(is_valid_reason(self.sensing_footprints))
         #self.sensing_footprints = self.sensing_footprints.simplify(0.1)
 
     def update_safety_area(self):

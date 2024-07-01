@@ -125,7 +125,7 @@ class ExplorationManager:
             all_footprints.append(robot_footprints)
 
         # Merge all footprints using shapely's unary_union
-        return custom_merge(all_footprints)
+        return custom_merge(all_footprints).simplify(0.3)
 
     def get_frontiers(self):
         '''
