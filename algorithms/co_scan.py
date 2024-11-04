@@ -43,21 +43,47 @@ class CoScanPlanner:
             self.global_goals = [None] * num_agent
             return self.global_goals
 
-        # Assign clusters to agents using Hungarian algorithm
-        nc = cluster_center[0].shape[0]
-        cost = np.array([np_obstacle_map_distance[i][cluster_center[0], cluster_center[1]] for i in range(num_agent)]) # num_agent * nc
-        # handle num_agent > nc (more agents than clusters) case by repeating the cost matrix.
-        cost = np.hstack([cost] * ((num_agent - 1) // nc + 1))
+        # Assign clusters to agents using the modified Hungarian algorithm
+        # The dummy method is proposed in this paper: "Coordinated multi-robot exploration", Burgard, et al., 2005.
+        nc = cluster_center[0].shape[0]  # Number of clusters
+        cost = np.array([np_obstacle_map_distance[i][cluster_center[0], cluster_center[1]] for i in range(num_agent)])
+
+        num_agents = num_agent
+        num_clusters = nc
+
+        # Make the cost matrix square by adding dummy tasks or agents
+        if num_agents > num_clusters:
+            # Add dummy tasks with high cost
+            num_dummy_tasks = num_agents - num_clusters
+            high_cost = cost.max() + 1  # Or a sufficiently large number
+            dummy_costs = np.full((num_agents, num_dummy_tasks), high_cost)
+            cost = np.hstack((cost, dummy_costs))
+        elif num_agents < num_clusters:
+            # Add dummy agents with zero cost
+            num_dummy_agents = num_clusters - num_agents
+            zero_costs = np.zeros((num_dummy_agents, num_clusters))
+            cost = np.vstack((cost, zero_costs))
+
+        # Apply Hungarian Method
         row_ind, col_ind = linear_sum_assignment(cost)
 
-        self.global_goals = np.zeros((num_agent, 2), dtype=np.int32)
-        for i in range(num_agent):
-            cluster_idx = col_ind[i] % nc
-            agent_idx = row_ind[i]
+        # Filter out assignments involving dummy agents or tasks
+        assignments = []
+        for agent_idx, cluster_idx in zip(row_ind, col_ind):
+            if agent_idx >= num_agents or cluster_idx >= num_clusters:
+                continue  # Skip dummy assignments
+            assignments.append((agent_idx, cluster_idx))
+
+        self.global_goals = [None] * num_agent
+        for agent_idx, cluster_idx in assignments:
             frontier_dist = np_obstacle_map_distance[agent_idx][is_frontier]
-            frontier_dist[nearest_clusters != cluster_idx] = np.inf # only consider frontiers in the assigned cluster
+            # Only consider frontiers in the assigned cluster
+            frontier_dist[nearest_clusters != cluster_idx] = np.inf
+            if np.all(np.isinf(frontier_dist)):
+                # No reachable frontiers in this cluster for this agent
+                continue
             select = np.argmin(frontier_dist)
-            # return goal in [x, y] order
+            # Return goal in [x, y] order
             self.global_goals[agent_idx] = [frontier_idx[1][select], frontier_idx[0][select]]
 
         return self.global_goals
