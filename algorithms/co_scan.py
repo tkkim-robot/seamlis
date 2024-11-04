@@ -45,7 +45,8 @@ class CoScanPlanner:
 
         # Assign clusters to agents using Hungarian algorithm
         nc = cluster_center[0].shape[0]
-        cost = np.array([np_obstacle_map_distance[i][cluster_center[0], cluster_center[1]] for i in range(num_agent)])
+        cost = np.array([np_obstacle_map_distance[i][cluster_center[0], cluster_center[1]] for i in range(num_agent)]) # num_agent * nc
+        # handle num_agent > nc (more agents than clusters) case by repeating the cost matrix.
         cost = np.hstack([cost] * ((num_agent - 1) // nc + 1))
         row_ind, col_ind = linear_sum_assignment(cost)
 

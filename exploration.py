@@ -338,7 +338,7 @@ def main():
     x_init = waypoints[0]
     x_init2 = waypoints[-1]
     type = 'DynamicUnicycle2D'
-    exploration = ExplorationManager([x_init,x_init2], type=type, num_robot=2, dt=dt,
+    exploration = ExplorationManager([x_init,x_init2, x_init2], type=type, num_robot=3, dt=dt,
                                     show_animation=True,
                                     save_animation=True)
     exploration.explore()
