@@ -11,6 +11,7 @@ setup(
         'matplotlib',
         'gurobipy',
         'shapely',
+        'do-mpc[full]',
         'scikit-fmm'
     ],
     include_package_data=True,
