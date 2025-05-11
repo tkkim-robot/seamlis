@@ -1,15 +1,20 @@
+import sys
+import os
+# Add the safe_control directory to Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'safe_control'))
+
 import numpy as np
 from shapely.ops import unary_union
 from shapely.geometry import Polygon, MultiPolygon, Point, LineString
 
 import matplotlib.pyplot as plt
 
-from tracking import LocalTrackingController
+from safe_control.tracking import LocalTrackingController
 from algorithms.co_scan import CoScanPlanner
 from algorithms.frontier_vanilla import FrontierPlanner
-from utils import plotting
-from utils import env
-from utils.geometry import custom_merge
+from safe_control.utils import plotting
+from safe_control.utils import env
+from safe_control.utils.geometry import custom_merge
 
 """
 Created on June 22nd, 2024
@@ -26,11 +31,11 @@ Created on June 22nd, 2024
 """
 
 class ExplorationManager:
-    def __init__(self, X0s, type='DynamicUnicycle2D', exploration_algorithm='Frontier',
-                  num_robot=1, dt=0.05,
+    def __init__(self, X0s, robot_specs, controller_type, exploration_algorithm='Frontier',
+                  dt=0.05,
                   show_animation=False, save_animation=False):
-        self.type = type
-        self.num_robot = num_robot
+        self.robot_specs = robot_specs
+        self.num_robot = len(robot_specs)
         self.dt = dt
 
         self.plot_handler = plotting.Plotting()
@@ -41,10 +46,8 @@ class ExplorationManager:
         self.save_animation = save_animation
 
         self.controller_list = []
-        for i in range(num_robot):
-            X0 = X0s[i]
-            tracking_controller = LocalTrackingController(X0, type=type, 
-                                         robot_id=i,
+        for i in range(self.num_robot):
+            tracking_controller = LocalTrackingController(X0s[i], self.robot_specs[i], controller_type,
                                          dt=dt,
                                          show_animation=show_animation,
                                          save_animation=save_animation,
@@ -325,7 +328,7 @@ class ExplorationManager:
         
 
 def main():
-    dt = 0.5
+    dt = 0.1
 
     # temporal
     waypoints = [
@@ -337,8 +340,28 @@ def main():
     waypoints = np.array(waypoints, dtype=np.float64)
     x_init = waypoints[0]
     x_init2 = waypoints[-1]
-    type = 'DynamicUnicycle2D'
-    exploration = ExplorationManager([x_init,x_init2], type=type, num_robot=2, dt=dt,
+
+    # define as much robot specs as you want
+    robot_spec_1 = {
+        'model': 'DoubleIntegrator2D',
+        'sensor': 'rgbd'
+    }
+    robot_spec_2 = {
+        'model': 'DoubleIntegrator2D',
+        'sensor': 'rgbd'
+    }
+
+    robot_specs = [robot_spec_2]
+    for i, robot_spec in enumerate(robot_specs):
+        robot_spec['robot_id'] = i
+
+    controller_type = {
+        'pos': 'mpc_cbf',
+        'att': 'gatekeeper'
+    }
+
+    exploration = ExplorationManager([x_init2], robot_specs, controller_type,
+                                     dt=dt,
                                     show_animation=True,
                                     save_animation=True)
     exploration.explore()
