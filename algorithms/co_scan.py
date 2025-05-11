@@ -10,7 +10,7 @@ class CoScanPlanner:
     def __init__(self):
         self.global_goals = None
         
-    def get_long_term_goals(self, np_obstacle_map, np_frontier_map, agent_pos):
+    def get_long_term_goals(self, np_obstacle_map, np_frontier_map, agent_pos, agent_orientations):
         '''
         Compute long-term goals for agents using vanilla frontier exploration (greedy)
         

@@ -31,7 +31,7 @@ Created on June 22nd, 2024
 """
 
 class ExplorationManager:
-    def __init__(self, X0s, robot_specs, controller_type, exploration_algorithm='Frontier',
+    def __init__(self, X0s, robot_specs, controller_type, exploration_algorithm='CoScan',
                   dt=0.05,
                   show_animation=False, save_animation=False):
         self.robot_specs = robot_specs
@@ -361,6 +361,7 @@ def main():
     }
 
     exploration = ExplorationManager([x_init2], robot_specs, controller_type,
+                                    exploration_algorithm='Frontier',
                                      dt=dt,
                                     show_animation=True,
                                     save_animation=True)
