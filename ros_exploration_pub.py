@@ -260,12 +260,12 @@ class ExplorationROSNode(Node):
 
         if goal is None and controller.state_machine != 'stop':
             self.get_logger().info("Exploration complete....")
-            stop_msg = Float32MultiArray()
-            stop_msg.data = [0.0, 0.0]
-            self.publisher.publish(stop_msg)
-            return
 
-        # ret = controller.control_step() # TODO: Ask TK where to do this
+            msg = Float32MultiArray()
+            msg.data = [self.vicon_pose.x, self.vicon_pose.y, 0,0, 0.0, 0,0, 0.0, 0,0, 0.0, pose.z]
+            self.publisher.publish(msg)
+            return
+        
         u = controller.get_control_input()
         yaw_rate = controller.get_att_input()
         x_next, yaw_input = controller.get_full_state()
