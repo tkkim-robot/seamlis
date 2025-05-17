@@ -1,12 +1,12 @@
 import numpy as np
 class Env:
-    def __init__(self, width=20.0, height=20.0, resolution=0.1):
-        self.width = width
-        self.height = height
+    def __init__(self, x_range=(-3.5, 1.0), y_range=(-2.3, 1.8), resolution=0.1):
+        self.x_range = x_range
+        self.y_range = y_range
+        self.width = x_range[1] - x_range[0]
+        self.height = y_range[1] - y_range[0]
         self.resolution = resolution  # meters per cell
-        self.x_range = (0, width)
-        self.y_range = (0, height)
-        self.obs_boundary = self.set_obs_boundary(width, height)
+        self.obs_boundary = self.set_obs_boundary()
         self.obs_circle = self.set_obs_circle()
         self.obs_rectangle = self.set_obs_rectangle()
         self._discretize_map()
@@ -25,7 +25,9 @@ class Env:
         if points.ndim == 1:
             points = points.reshape(1, -1)
 
-        grid_points = (points / self.resolution).astype(int)
+        # Shift points to be relative to the origin of the grid
+        shifted_points = points - np.array([self.x_range[0], self.y_range[0]])
+        grid_points = (shifted_points / self.resolution).astype(int)
 
         if original_shape == (2,):
             return grid_points[0]  # Return a 1D array for a single input point
@@ -38,38 +40,35 @@ class Env:
         if grid_points.ndim == 1:
             grid_points = grid_points.reshape(1, -1)
 
+        # Convert grid points to continuous space and shift back to original coordinate system
         points = (grid_points * self.resolution) + (self.resolution / 2)
+        points = points + np.array([self.x_range[0], self.y_range[0]])
 
         if original_shape == (2,):
             return points[0]  # Return a 1D array for a single input point
         return points
 
-    @staticmethod
-    def set_obs_boundary(width, height):  # circle
-        w = width
-        h = height
+    def set_obs_boundary(self):  # circle
+        w = self.width
+        h = self.height
         linewidth = 0.1
+        x_start = self.x_range[0]
+        y_start = self.y_range[0]
         obs_boundary = [
-            [0, 0, linewidth, h],
-            [0, h, w, linewidth],
-            [linewidth, 0, w, linewidth],
-            [w, linewidth, linewidth, h]
+            [x_start, y_start, linewidth, h],
+            [x_start, y_start + h, w, linewidth],
+            [x_start + linewidth, y_start, w, linewidth],
+            [x_start + w, y_start + linewidth, linewidth, h]
         ]
         return obs_boundary
 
     @staticmethod
     def set_obs_rectangle():
-        # obs_rectangle = [
-        #     [14, 12, 8, 2],
-        #     [18, 22, 8, 3],
-        #     [26, 7, 2, 12],
-        #     [32, 14, 10, 2]
-        # ]
-        obs_rectangle = [[5, 5, 10, 10]]
+        # Example obstacles in the new coordinate system
         obs_rectangle = []
         return obs_rectangle
+
     @staticmethod
     def set_obs_circle():
-        obs_cir = [[18, 18, 1]]
         obs_cir = []
         return obs_cir

@@ -40,6 +40,7 @@ class ExplorationManager:
 
         self.plot_handler = plotting.Plotting()
         self.ax, self.fig = self.plot_handler.plot_grid("Local Tracking Controller")
+        # Initialize environment with ranges that accommodate the waypoints
         self.env_handler = env.Env()
 
         self.show_animation = show_animation
@@ -74,10 +75,13 @@ class ExplorationManager:
 
 
     def set_env_workspace(self, env_handler):
-        # Add workspace boundary
-        self.env_workspace = Polygon([(0, 0), (0, env_handler.height), 
-                             (env_handler.width, env_handler.height), 
-                             (env_handler.width, 0)])
+        # Add workspace boundary using the environment's coordinate ranges
+        self.env_workspace = Polygon([
+            (env_handler.x_range[0], env_handler.y_range[0]),
+            (env_handler.x_range[0], env_handler.y_range[1]),
+            (env_handler.x_range[1], env_handler.y_range[1]),
+            (env_handler.x_range[1], env_handler.y_range[0])
+        ])
         return self.env_workspace
         
     def set_env_obstacles(self, env_handler):
@@ -237,6 +241,7 @@ class ExplorationManager:
         robots_reached_goals = [False] * self.num_robot
         for i, controller in enumerate(self.controller_list):
             controller.control_step()
+            #print(f"controller reahced goal: {controller.has_reached_goal()}")
             if controller.has_reached_goal():
                 robots_reached_goals[i] = True
         return robots_reached_goals
@@ -246,10 +251,12 @@ class ExplorationManager:
         Asynchronously update goals only for robots that have reached their goals
         '''
         new_global_goals = self.update_global_goals()
+        print(f"new_global_goals: {new_global_goals[0]}")
         if new_global_goals is not None:
             for i, reached in enumerate(robots_reached_goals):
                 if reached: #only update goals with goal-reached robots
                     self.robot_goals[i] = new_global_goals[i]
+                    print(f"set new goal to robot {i}: {new_global_goals[i]}")
                     self.controller_list[i].set_waypoints([new_global_goals[i]])
             
             if self.show_animation:
@@ -292,6 +299,8 @@ class ExplorationManager:
     
     def get_frontier_map(self):
         frontier_map = np.zeros(self.env_handler.get_map_shape(), dtype=np.int8)
+
+        print(f"num of frontiers: {len(self.frontiers.coords)}")
         if len(self.frontiers.coords) == 0:
             return frontier_map
 
@@ -362,7 +371,7 @@ def main():
 
     exploration = ExplorationManager([x_init2], robot_specs, controller_type,
                                     exploration_algorithm='Frontier',
-                                     dt=dt,
+                                    dt=dt,
                                     show_animation=True,
                                     save_animation=True)
     exploration.explore()

@@ -12,7 +12,7 @@ from px4_msgs.msg import VehicleLocalPosition
 from nav_msgs.msg import Odometry
 
 from seamlis.exploration import ExplorationManager
-from safe_control.utils import env, plotting
+from seamlis.utils import env, plotting
 
 from nvblox_msgs.msg import DistanceMapSlice
 
@@ -33,7 +33,7 @@ class ExplorationROSNode(Node):
         # Robot specs and init pose
         robot_spec = {
             'model': 'DoubleIntegrator2D',
-            'w_max': 1.5,
+            'w_max': 0.3,
             'a_max': 0.5,
             'v_max': 0.5,
             'fov_angle': 70.0,
@@ -49,6 +49,9 @@ class ExplorationROSNode(Node):
             exploration_algorithm='Frontier',
             dt=self.dt, show_animation=True, save_animation=False
         )
+        
+        # setup obstacle position #FIXME:
+        self.exploration_manager.controller_list[0].obs = np.array([[-1.75, -0.5, 0.75]])
 
         # ROS interfaces
         self.subscription = self.create_subscription(
@@ -79,6 +82,9 @@ class ExplorationROSNode(Node):
         # Plotting
         self.odom_x_list = []
         self.odom_y_list = []
+        self.vicon_pose = None
+
+        self.env_handler = env.Env()
 
         # Initial frontier and goal assignment
         # self.initialize_exploration()
@@ -93,6 +99,12 @@ class ExplorationROSNode(Node):
         resolution = msg.resolution
         unknown_val = msg.unknown_value
         epsilon = 0.2  # Threshold for free vs obstacle
+
+        # Map bounds in metric coordinates
+        min_x, max_x = self.env_handler.x_range
+        min_y, max_y = self.env_handler.y_range
+
+        #print(f"min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
 
         # Masks
         obstacle_mask = (map_slice < epsilon) & (map_slice != unknown_val)
@@ -110,15 +122,50 @@ class ExplorationROSNode(Node):
             neighbor_obstacle = padded_obstacle[1+dy:1+dy+height, 1+dx:1+dx+width]
             frontier_mask |= known_free_mask & neighbor_unknown & (~neighbor_obstacle)
 
+        # Remove isolated frontier cells (erosion-like operation)
+        kernel = np.ones((3,3), np.uint8)
+        frontier_count = cv2.filter2D((frontier_mask).astype(np.uint8), -1, kernel)
+        frontier_mask &= (frontier_count >= 3)  # Keep only cells with at least 3 frontier neighbors
+
         # Get frontier pixel coordinates
         frontier_indices = np.argwhere(frontier_mask)
         origin_x, origin_y = msg.origin.x, msg.origin.y
 
+        #print(f"origin_x: {origin_x}, origin_y: {origin_y}")
+
         # Convert pixel (row, col) to metric (x, y)
         frontier_points = np.array([
-            [origin_x + col * resolution, origin_y + row * resolution]
+            [origin_x + col * resolution, -(origin_y + row * resolution)]
             for row, col in frontier_indices
         ], dtype=np.float32)
+
+
+        # Handle empty or invalid frontier points
+        if frontier_points is None or len(frontier_points) == 0:
+            frontier_points = np.empty((0, 2), dtype=np.float32)
+            frontier_indices = np.empty((0, 2), dtype=np.int32)
+        elif len(frontier_points.shape) == 1:
+            # If single point, reshape to 2D array
+            frontier_points = frontier_points.reshape(1, -1)
+            frontier_indices = frontier_indices.reshape(1, -1)
+
+        # Filter frontiers outside map bounds
+        bounds_mask = (frontier_points[:, 0] >= min_x) & (frontier_points[:, 0] <= max_x) & \
+                     (frontier_points[:, 1] >= min_y) & (frontier_points[:, 1] <= max_y)
+        frontier_points = frontier_points[bounds_mask]
+        frontier_indices = frontier_indices[bounds_mask]
+
+        # Filter out frontiers that are too close to the robot
+        if self.vicon_pose is not None:
+            robot_pos = np.array([self.vicon_pose.x, self.vicon_pose.y])
+            #print(f"robot_pos: {robot_pos}")
+            distances = np.linalg.norm(frontier_points - robot_pos, axis=1)
+            mask = distances >= self.exploration_manager.controller_list[0].reached_threshold
+            frontier_points = frontier_points[mask]
+            frontier_indices = frontier_indices[mask]
+            # Update frontier mask based on filtered points
+            frontier_mask[:] = False  # Clear existing mask
+            frontier_mask[frontier_indices[:, 0], frontier_indices[:, 1]] = True
 
         # Wrap into shapely LineString so you can use .coords
         self.frontier = LineString(frontier_points)
@@ -129,10 +176,10 @@ class ExplorationROSNode(Node):
         frontier_vis[obstacle_mask] = [0, 0, 255]
         frontier_vis[frontier_mask] = [255, 255, 255]
 
+        # draw 5*5 square white at the origin
+        frontier_vis[0:5, 0:5] = [255, 255, 255]
+
         cv2.imwrite("/workspaces/colcon_ws/frontiers.png", frontier_vis)
-
-
-
 
 
     def map_callback(self, msg):
@@ -143,27 +190,13 @@ class ExplorationROSNode(Node):
             return
 
         min_val = min(msg.data)
-        self.get_logger().info(f"Minimum value in DistanceMapSlice: {min_val}")
+        #self.get_logger().info(f"Minimum value in DistanceMapSlice: {min_val}")
 
         self._extract_frontier(msg)
 
         if not self.exploration_initialized:
             self.get_logger().info("Initializing exploration.")
             self.initialize_exploration()
-
-    # TODO:
-    def timer_callback(self):
-
-        if not self.exploration_initialized:
-            self.get_logger().warn("Exploration not initialized.")
-            return
-        
-        robots_reached_goals = self.exploration_manager.move_robots()
-        
-        if any(robots_reached_goals):
-            self.exploration_manager.frontiers = self.frontier  # Update frontiers
-            self.exploration_manager.update_goals_for_completed(robots_reached_goals)
-
 
     def initialize_exploration(self):
         # TODO: check whether at least one callback has been called for map_callback
@@ -186,19 +219,25 @@ class ExplorationROSNode(Node):
         #         self.frontiers = self.get_frontiers()  # Update frontiers
         #         self.update_goals_for_completed(robots_reached_goals)
 
-    def odom_callback(self, msg):
+
+    # TODO:
+    def timer_callback(self):
+
         if not self.exploration_initialized:
+            self.get_logger().warn("Exploration not initialized.")
             return
+        
+        robots_reached_goals = self.exploration_manager.move_robots()
+        
+        if any(robots_reached_goals):
+            #print(f"robots_reached_goals: {robots_reached_goals}")
+            self.exploration_manager.frontiers = self.frontier  # Update frontiers
+            self.exploration_manager.update_goals_for_completed(robots_reached_goals)
+
+    def odom_callback(self, msg):
 
         controller = self.exploration_manager.controller_list[0]
         goal = controller.goal
-
-        if goal is None and controller.state_machine != 'stop':
-            self.get_logger().info("Exploration complete.")
-            stop_msg = Float32MultiArray()
-            stop_msg.data = [0.0, 0.0]
-            self.publisher.publish(stop_msg)
-            return
 
         # PX4 local position update
         pose = Odometry().pose.pose.position
@@ -213,21 +252,36 @@ class ExplorationROSNode(Node):
         velocity.y = msg.vy
 
         controller.set_robot_state(pose, orientation, velocity)
+        self.vicon_pose = pose
 
-        # ret = controller.control_step()
+        if not self.exploration_initialized:
+            return
+        #print(f"goal: {goal}")
+
+        if goal is None and controller.state_machine != 'stop':
+            self.get_logger().info("Exploration complete....")
+            stop_msg = Float32MultiArray()
+            stop_msg.data = [0.0, 0.0]
+            self.publisher.publish(stop_msg)
+            return
+
+        # ret = controller.control_step() # TODO: Ask TK where to do this
         u = controller.get_control_input()
         yaw_rate = controller.get_att_input()
         x_next, yaw_input = controller.get_full_state()
 
-        print("u: ", u)
-        print("yaw_rate: ", yaw_rate)
-        print("x_next: ", x_next)
-        print("yaw_input: ", yaw_input)
+        # print("u: ", u)
+        # print("yaw_rate: ", yaw_rate)
+        # print("x_next: ", x_next)
+        # print("yaw_input: ", yaw_input)
+
 
         full_state_u = np.concatenate((x_next, u, [[yaw_input]], yaw_rate, [[pose.z]]), axis=0)
         msg = Float32MultiArray()
         msg.data = [float(val) for val in full_state_u.flatten()]
         self.publisher.publish(msg)
+
+        #self.get_logger().info(f'Publishing: {msg.data}')
 
         # if self.infeasible_flag:
         #     self.infeasible_flag = True
