@@ -251,7 +251,7 @@ class ExplorationManager:
         Asynchronously update goals only for robots that have reached their goals
         '''
         new_global_goals = self.update_global_goals()
-        print(f"new_global_goals: {new_global_goals[0]}")
+        print(f"new_global_goals: {new_global_goals}")
         if new_global_goals is not None:
             for i, reached in enumerate(robots_reached_goals):
                 if reached: #only update goals with goal-reached robots

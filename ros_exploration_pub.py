@@ -28,14 +28,14 @@ class ExplorationROSNode(Node):
 
         # Parameters
         self.dt = 0.05
-        self.controller_type = {'pos': 'mpc_cbf', 'att': 'gatekeeper'}
+        self.controller_type = {'pos': 'mpc_cbf', 'att': 'velocity_tracking_yaw'}
 
         # Robot specs and init pose
         robot_spec = {
             'model': 'DoubleIntegrator2D',
-            'w_max': 0.3,
-            'a_max': 0.5,
-            'v_max': 0.5,
+            'w_max': 0.4,
+            'a_max': 0.3,
+            'v_max': 0.3,
             'fov_angle': 70.0,
             'cam_range': 3.0,
             'sensor': 'rgbd',
@@ -58,7 +58,7 @@ class ExplorationROSNode(Node):
             VehicleLocalPosition,
             '/px4_3/fmu/out/vehicle_local_position',
             self.odom_callback,
-            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+            QoSProfile(depth=20, reliability=ReliabilityPolicy.BEST_EFFORT)
         )
 
         self.map_subscription = self.create_subscription(
@@ -74,6 +74,7 @@ class ExplorationROSNode(Node):
         self.exploration_initialized = False
         self.robot_goal = None
         self.infeasible_flag = False
+        self.goal_update_flag = False
 
         # Frontiers
         self.frontier = None
@@ -168,7 +169,10 @@ class ExplorationROSNode(Node):
             frontier_mask[frontier_indices[:, 0], frontier_indices[:, 1]] = True
 
         # Wrap into shapely LineString so you can use .coords
-        self.frontier = LineString(frontier_points)
+        if len(frontier_points) > 0:
+            self.frontier = LineString(frontier_points)
+        else:
+            self.frontier = LineString()
 
         # Save visualization image
         frontier_vis = np.zeros((height, width, 3), dtype=np.uint8)
@@ -176,8 +180,8 @@ class ExplorationROSNode(Node):
         frontier_vis[obstacle_mask] = [0, 0, 255]
         frontier_vis[frontier_mask] = [255, 255, 255]
 
-        # draw 5*5 square white at the origin
-        frontier_vis[0:5, 0:5] = [255, 255, 255]
+        # # draw 5*5 square white at the origin
+        # frontier_vis[0:5, 0:5] = [255, 255, 255]
 
         cv2.imwrite("/workspaces/colcon_ws/frontiers.png", frontier_vis)
 
@@ -192,10 +196,11 @@ class ExplorationROSNode(Node):
         min_val = min(msg.data)
         #self.get_logger().info(f"Minimum value in DistanceMapSlice: {min_val}")
 
-        self._extract_frontier(msg)
+        self.map = msg
 
         if not self.exploration_initialized:
             self.get_logger().info("Initializing exploration.")
+            self._extract_frontier(msg)
             self.initialize_exploration()
 
     def initialize_exploration(self):
@@ -223,6 +228,8 @@ class ExplorationROSNode(Node):
     # TODO:
     def timer_callback(self):
 
+        print("asdf")
+
         if not self.exploration_initialized:
             self.get_logger().warn("Exploration not initialized.")
             return
@@ -230,9 +237,12 @@ class ExplorationROSNode(Node):
         robots_reached_goals = self.exploration_manager.move_robots()
         
         if any(robots_reached_goals):
+            self.goal_update_flag = True
+            self._extract_frontier(self.map)
             #print(f"robots_reached_goals: {robots_reached_goals}")
             self.exploration_manager.frontiers = self.frontier  # Update frontiers
             self.exploration_manager.update_goals_for_completed(robots_reached_goals)
+            self.goal_update_flag = False
 
     def odom_callback(self, msg):
 
@@ -245,7 +255,7 @@ class ExplorationROSNode(Node):
         pose.y = msg.y
         pose.z = msg.z
 
-        orientation = [0, 0, angle_normalize(msg.heading + np.pi / 2)]
+        orientation = [0, 0, angle_normalize(msg.heading)]
 
         velocity = Odometry().twist.twist.linear
         velocity.x = msg.vx
@@ -256,13 +266,28 @@ class ExplorationROSNode(Node):
 
         if not self.exploration_initialized:
             return
-        #print(f"goal: {goal}")
+        print(f"state_machine: {controller.state_machine}")
+        print(f"goal: {goal}")
+        print(f"pose: {pose.x}, {pose.y}")
+        print()
 
-        if goal is None and controller.state_machine != 'stop':
-            self.get_logger().info("Exploration complete....")
+        if self.goal_update_flag:
+            self.get_logger().info("Goal update flag is True")
+
+        if goal is None and controller.state_machine != 'stop' or self.goal_update_flag:
+            if goal is None and controller.state_machine != 'stop':
+                self.get_logger().info("Exploration complete....")
+            else:
+                self.get_logger().info("Stopping...")
 
             msg = Float32MultiArray()
-            msg.data = [self.vicon_pose.x, self.vicon_pose.y, 0,0, 0.0, 0,0, 0.0, 0,0, 0.0, pose.z]
+            print(self.vicon_pose.x, type(self.vicon_pose.x))
+            print(self.vicon_pose.y, type(self.vicon_pose.y))
+            print(pose.z, type(pose.z))
+
+            stop_msg = [self.vicon_pose.x, self.vicon_pose.y, 0,0, 0.0, 0,0, 0.0, angle_normalize(msg.heading), 0.0, pose.z]
+            msg.data = [float(val) for val in stop_msg]
+            #msg.data = [float(val) for val in msg.data]
             self.publisher.publish(msg)
             return
         
