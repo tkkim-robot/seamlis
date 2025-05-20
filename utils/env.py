@@ -1,7 +1,7 @@
 import numpy as np
 class Env:
     #def __init__(self, x_range=(-3.5, 1.0), y_range=(-2.3, 1.8), resolution=0.1):
-    def __init__(self, x_range=(-1.5, 1.0), y_range=(-1.5, 1.5), resolution=0.1):
+    def __init__(self, x_range=(-1.25, 1.25), y_range=(-1.25, 1.25), resolution=0.1):
         self.x_range = x_range
         self.y_range = y_range
         self.width = x_range[1] - x_range[0]

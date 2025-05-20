@@ -33,9 +33,9 @@ class ExplorationROSNode(Node):
         # Robot specs and init pose
         robot_spec = {
             'model': 'DoubleIntegrator2D',
-            'w_max': 0.4,
-            'a_max': 0.3,
-            'v_max': 0.3,
+            'w_max': 0.3,
+            'a_max': 0.5,
+            'v_max': 0.5,
             'fov_angle': 70.0,
             'cam_range': 3.0,
             'sensor': 'rgbd',
@@ -51,7 +51,7 @@ class ExplorationROSNode(Node):
         )
         
         # setup obstacle position #FIXME:
-        self.exploration_manager.controller_list[0].obs = np.array([[-1.75, -0.5, 0.75]])
+        self.exploration_manager.controller_list[0].obs = np.array([[1.2, -1.2, 0.80]])
 
         # ROS interfaces
         self.subscription = self.create_subscription(
@@ -105,7 +105,7 @@ class ExplorationROSNode(Node):
         min_x, max_x = self.env_handler.x_range
         min_y, max_y = self.env_handler.y_range
 
-        #print(f"min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
+        print(f"min_x: {min_x}, max_x: {max_x}, min_y: {min_y}, max_y: {max_y}")
 
         # Masks
         obstacle_mask = (map_slice < epsilon) & (map_slice != unknown_val)
@@ -285,7 +285,7 @@ class ExplorationROSNode(Node):
             print(self.vicon_pose.y, type(self.vicon_pose.y))
             print(pose.z, type(pose.z))
 
-            stop_msg = [self.vicon_pose.x, self.vicon_pose.y, 0,0, 0.0, 0,0, 0.0, angle_normalize(msg.heading), 0.0, pose.z]
+            stop_msg = [self.vicon_pose.x, self.vicon_pose.y, 0,0, 0.0, 0,0, 0.0, orientation[2], 0.0, pose.z]
             msg.data = [float(val) for val in stop_msg]
             #msg.data = [float(val) for val in msg.data]
             self.publisher.publish(msg)
