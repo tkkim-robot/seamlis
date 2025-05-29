@@ -335,7 +335,7 @@ def main():
         [2, 2, math.pi/2],
         [2, 12, 0],
         [10, 12, 0],
-        [15, 2, 0]
+        [15, 2, math.pi/2]
     ]
     waypoints = np.array(waypoints, dtype=np.float64)
     x_init = waypoints[0]
@@ -344,14 +344,20 @@ def main():
     # define as much robot specs as you want
     robot_spec_1 = {
         'model': 'DoubleIntegrator2D',
-        'sensor': 'rgbd'
+        'sensor': 'rgbd',
+        'cam_range': 5.0,
+        'reached_threshold': 2.0,
+        'exploration': True
     }
     robot_spec_2 = {
         'model': 'DoubleIntegrator2D',
-        'sensor': 'rgbd'
+        'sensor': 'rgbd',
+        'cam_range': 7.0,
+        'reached_threshold': 2.0,
+        'exploration': True
     }
 
-    robot_specs = [robot_spec_2]
+    robot_specs = [robot_spec_1, robot_spec_2]
     for i, robot_spec in enumerate(robot_specs):
         robot_spec['robot_id'] = i
 
@@ -360,8 +366,8 @@ def main():
         'att': 'gatekeeper'
     }
 
-    exploration = ExplorationManager([x_init2], robot_specs, controller_type,
-                                    exploration_algorithm='Frontier',
+    exploration = ExplorationManager([x_init, x_init2], robot_specs, controller_type,
+                                    exploration_algorithm='CoScan',
                                      dt=dt,
                                     show_animation=True,
                                     save_animation=True)
