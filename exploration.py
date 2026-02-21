@@ -363,7 +363,7 @@ def main():
 
     controller_type = {
         'pos': 'mpc_cbf',
-        'att': 'visibility_area'
+        'att': 'gatekeeper'
     }
 
     exploration = ExplorationManager([x_init, x_init2], robot_specs, controller_type,
