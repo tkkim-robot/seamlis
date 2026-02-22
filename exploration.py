@@ -4,12 +4,13 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'safe_control'))
 
 import numpy as np
+import heapq
 from shapely.ops import unary_union
 from shapely.geometry import Polygon, MultiPolygon, Point, LineString
 
 import matplotlib.pyplot as plt
 
-from safe_control.tracking import LocalTrackingController
+from tracking_controller import LocalTrackingController
 from algorithms.co_scan import CoScanPlanner
 from algorithms.frontier_vanilla import FrontierPlanner
 from safe_control.utils import plotting
@@ -30,20 +31,70 @@ Created on June 22nd, 2024
 @required-scripts: tracking.py, utils/plotting.py, utils/env.py, algorithms/co_scan.py
 """
 
+
+def _normalize_obs_array(obs):
+    obs = np.array([] if obs is None else obs, dtype=float)
+    if obs.size == 0:
+        return np.empty((0, 7))
+    if obs.ndim == 1:
+        obs = obs.reshape(1, -1)
+    if obs.shape[1] == 3:
+        obs = np.hstack((obs, np.zeros((obs.shape[0], 4))))
+    elif obs.shape[1] < 7:
+        obs = np.hstack((obs, np.zeros((obs.shape[0], 7 - obs.shape[1]))))
+    elif obs.shape[1] > 7:
+        obs = obs[:, :7]
+    return obs
+
+
 class ExplorationManager:
     def __init__(self, X0s, robot_specs, controller_type, exploration_algorithm='CoScan',
-                  dt=0.05,
-                  show_animation=False, save_animation=False):
+                  dt=0.1,
+                  show_animation=False, save_animation=False,
+                  env_handler=None, env_width=20.0, env_height=20.0,
+                  known_obs=None, unknown_obs=None, env_resolution=0.1,
+                  use_astar_waypoints=False, coverage_target=0.98):
         self.robot_specs = robot_specs
         self.num_robot = len(robot_specs)
         self.dt = dt
+        self.failed = False
+        self.last_step_status = [0] * self.num_robot
+        self.last_collision_info = None
+        self.latest_obstacle_map = None
+        self.use_astar_waypoints = bool(use_astar_waypoints)
+        self.coverage_target = float(np.clip(coverage_target, 0.0, 1.0))
 
-        self.plot_handler = plotting.Plotting()
-        self.ax, self.fig = self.plot_handler.plot_grid("Local Tracking Controller")
-        self.env_handler = env.Env()
+        self.known_obs = _normalize_obs_array(known_obs)
+        self.unknown_obs = _normalize_obs_array(unknown_obs)
+
+        if env_handler is None:
+            self.env_handler = env.Env(
+                width=env_width,
+                height=env_height,
+                known_obs=self.known_obs,
+                resolution=env_resolution,
+            )
+        else:
+            self.env_handler = env_handler
+            if self.known_obs.size == 0:
+                self.known_obs = self._collect_known_obs_from_env(self.env_handler)
 
         self.show_animation = show_animation
         self.save_animation = save_animation
+
+        if self.show_animation:
+            self.plot_handler = plotting.Plotting(
+                width=self.env_handler.width,
+                height=self.env_handler.height,
+                known_obs=self.known_obs,
+            )
+            self.ax, self.fig = self.plot_handler.plot_grid("Local Tracking Controller")
+        else:
+            self.plot_handler = None
+            self.fig, self.ax = plt.subplots()
+            self.ax.set_xlim(0.0, self.env_handler.width)
+            self.ax.set_ylim(0.0, self.env_handler.height)
+            self.ax.set_aspect('equal', adjustable='box')
 
         self.controller_list = []
         for i in range(self.num_robot):
@@ -54,6 +105,7 @@ class ExplorationManager:
                                          ax=self.ax, fig=self.fig,
                                          env=self.env_handler)
             self.controller_list.append(tracking_controller)
+        self._apply_environment_to_controllers()
         self.merged_global_map = Polygon() 
         self.frontiers = LineString()
 
@@ -63,6 +115,10 @@ class ExplorationManager:
         # Set up the environment
         self.set_env_obstacles(self.env_handler)
         self.set_env_workspace(self.env_handler)
+        self.static_obstacle_map = self._compute_static_obstacle_map()
+        free_space_geom = self.env_workspace.difference(self.env_obstacles)
+        self.free_space_area = max(float(free_space_geom.area), 1e-6)
+        self.last_coverage_ratio = 0.0
         self.robot_goals = [None] * self.num_robot
 
         if exploration_algorithm == 'CoScan':
@@ -72,6 +128,39 @@ class ExplorationManager:
         else:
             raise ValueError(f"Exploration algorithm {exploration_algorithm} is not implemented")
 
+    @staticmethod
+    def _collect_known_obs_from_env(env_handler):
+        known_obs_parts = []
+        circle_obs = _normalize_obs_array(getattr(env_handler, 'obs_circle', []))
+        if circle_obs.size > 0:
+            known_obs_parts.append(circle_obs)
+        super_obs = _normalize_obs_array(getattr(env_handler, 'obs_superellipsoid', []))
+        if super_obs.size > 0:
+            known_obs_parts.append(super_obs)
+        if len(known_obs_parts) == 0:
+            return np.empty((0, 7))
+        return np.vstack(known_obs_parts)
+
+    @staticmethod
+    def _superellipsoid_to_polygon(obs_info, num_points=100):
+        ox, oy, a, b, e, theta = np.asarray(obs_info[:6], dtype=float)
+        a = max(abs(a), 1e-3)
+        b = max(abs(b), 1e-3)
+        e = max(abs(e), 2.0)
+
+        phi = np.linspace(0.0, 2.0 * np.pi, num_points, endpoint=False)
+        x = a * np.sign(np.cos(phi)) * np.abs(np.cos(phi)) ** (2.0 / e)
+        y = b * np.sign(np.sin(phi)) * np.abs(np.sin(phi)) ** (2.0 / e)
+        rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+        points = (rot @ np.vstack((x, y))).T + np.array([ox, oy])
+        return Polygon(points)
+
+    def _apply_environment_to_controllers(self):
+        known_obs = np.copy(self.known_obs)
+        unknown_obs = np.copy(self.unknown_obs)
+        for controller in self.controller_list:
+            controller.obs = known_obs
+            controller.set_unknown_obs(unknown_obs)
 
     def set_env_workspace(self, env_handler):
         # Add workspace boundary
@@ -84,6 +173,7 @@ class ExplorationManager:
         # Get obstacle information
         obs_rectangle = env_handler.obs_rectangle
         obs_circle = env_handler.obs_circle
+        obs_superellipsoid = env_handler.obs_superellipsoid
 
         # Create obstacle geometries
         obstacle_geometries = []
@@ -92,11 +182,16 @@ class ExplorationManager:
             x, y, w, h = rect
             obstacle_geometries.append(Polygon([(x, y), (x+w, y), (x+w, y+h), (x, y+h)]))
         for circle in obs_circle:
-            x, y, r = circle
+            x, y, r = circle[:3]
             obstacle_geometries.append(Point(x, y).buffer(r))
+        for obs in obs_superellipsoid:
+            obstacle_geometries.append(self._superellipsoid_to_polygon(obs))
 
         # Combine all obstacles
-        self.env_obstacles = unary_union(obstacle_geometries)
+        if len(obstacle_geometries) == 0:
+            self.env_obstacles = Polygon()
+        else:
+            self.env_obstacles = unary_union(obstacle_geometries)
         return self.env_obstacles
 
     def set_waypoints(self, robot_ids, waypoints):
@@ -191,41 +286,97 @@ class ExplorationManager:
         interpolated_points = start_points + alphas[:, np.newaxis] * (end_points - start_points)
         
         # Check validity of interpolated points
-        valid_mask = np.array([self.env_workspace.contains(Point(p)) and not self.env_obstacles.contains(Point(p)) 
+        valid_mask = np.array([self.env_workspace.contains(Point(p)) and not self.env_obstacles.contains(Point(p))
                             for p in interpolated_points])
         
         return interpolated_points[valid_mask]
 
-    def explore(self):
+    def explore(self, max_steps=None):
         '''
         Main exploration loop with goal-based updates
         '''
+        self.failed = False
         self.frontiers = self.get_frontiers()  # initially get frontiers
+        self.last_coverage_ratio = self.get_coverage_ratio()
+        if self.last_coverage_ratio >= self.coverage_target:
+            if self.save_animation:
+                self.controller_list[0].export_video()
+            print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
+            return True
+        if self.exploration_complete():
+            print(f"Exploration frontiers exhausted, but coverage={self.last_coverage_ratio:.3f} < target={self.coverage_target:.3f}.")
+            return False
+
         self.update_all_goals()  # Initial goal assignment for all robots
+        if self.global_goals is None:
+            self.last_coverage_ratio = self.get_coverage_ratio()
+            if self.last_coverage_ratio >= self.coverage_target:
+                if self.save_animation:
+                    self.controller_list[0].export_video()
+                print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
+                return True
+            print(f"Exploration has no new goals, but coverage={self.last_coverage_ratio:.3f} < target={self.coverage_target:.3f}.")
+            return False
+
         if self.show_animation:
             self.update_visualization()
-            
-        while not self.exploration_complete():
+
+        step_count = 0
+        while True:
+            if max_steps is not None and step_count >= max_steps:
+                print(
+                    f"Exploration stopped after reaching max_steps={max_steps}. "
+                    f"Coverage={self.last_coverage_ratio:.3f}."
+                )
+                return False
+
             robots_reached_goals = self.move_robots()
-            
+            step_count += 1
+
+            if self.failed:
+                print(
+                    "Exploration failed: collision or infeasible optimization. "
+                    f"Coverage={self.last_coverage_ratio:.3f}."
+                )
+                return False
+
+            refresh_map = any(robots_reached_goals) or (step_count % 15 == 0)
+            if refresh_map:
+                self.frontiers = self.get_frontiers()
+                self.last_coverage_ratio = self.get_coverage_ratio()
+                if self.last_coverage_ratio >= self.coverage_target:
+                    if self.save_animation:
+                        self.controller_list[0].export_video()
+                    print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
+                    return True
+                if self.exploration_complete():
+                    print(
+                        f"Exploration frontiers exhausted, but coverage={self.last_coverage_ratio:.3f} "
+                        f"< target={self.coverage_target:.3f}."
+                    )
+                    return False
+
             if any(robots_reached_goals):
-                self.frontiers = self.get_frontiers()  # Update frontiers
                 self.update_goals_for_completed(robots_reached_goals)
-            
+
             if self.show_animation:
                 self.update_visualization()
-        if self.save_animation:
-            self.controller_list[0].export_video()
-        print("Exploration complete!")
 
     def update_all_goals(self):
         '''
         Initially assign goals to all robots (later, goal assignment is asychronous)
         '''
         self.global_goals = self.update_global_goals()
+        if self.global_goals is None:
+            self.robot_goals = [None] * self.num_robot
+            return
         for i, controller in enumerate(self.controller_list):
             self.robot_goals[i] = self.global_goals[i]
-            controller.set_waypoints([self.global_goals[i]])
+            if self.use_astar_waypoints:
+                waypoints = self._build_waypoints_for_robot(i, self.global_goals[i])
+            else:
+                waypoints = np.array([self.global_goals[i][:2]], dtype=float)
+            controller.set_waypoints(waypoints)
         
         if self.show_animation:
             self.global_goals_scatter.set_offsets(self.global_goals)
@@ -235,28 +386,105 @@ class ExplorationManager:
         Move all robots and return a list indicating which robots have reached their goals
         '''
         robots_reached_goals = [False] * self.num_robot
+        self.last_step_status = [0] * self.num_robot
         for i, controller in enumerate(self.controller_list):
-            controller.control_step()
+            pre_detected_unknown = np.array(
+                getattr(controller.robot, 'detected_unknown_obs_memory', np.empty((0, 7))),
+                dtype=float,
+                copy=True,
+            )
+            step_status = controller.control_step()
+            self.last_step_status[i] = step_status
+            if step_status == -2:
+                self.failed = True
+                self._record_collision_info(i, controller, pre_detected_unknown)
             if controller.has_reached_goal():
                 robots_reached_goals[i] = True
         return robots_reached_goals
+
+    def _record_collision_info(self, robot_idx, controller, pre_detected_unknown):
+        robot_pos = np.asarray(controller.robot.get_position(), dtype=float).reshape(-1)
+        robot_radius = float(controller.robot.robot_radius)
+
+        unknown_idx = None
+        unknown_obs = None
+        for idx, obs in enumerate(self.unknown_obs):
+            if np.linalg.norm(robot_pos - obs[:2]) < (robot_radius + obs[2]):
+                unknown_idx = idx
+                unknown_obs = obs
+                break
+
+        if unknown_obs is None:
+            self.last_collision_info = {
+                'robot_idx': int(robot_idx),
+                'type': 'known_or_infeasible',
+            }
+            return
+
+        post_detected_unknown = np.array(
+            getattr(controller.robot, 'detected_unknown_obs_memory', np.empty((0, 7))),
+            dtype=float,
+            copy=True,
+        )
+        detected_pre = self._obs_in_memory(pre_detected_unknown, unknown_obs)
+        detected_post = self._obs_in_memory(post_detected_unknown, unknown_obs)
+        if detected_pre:
+            stage = 'already_detected_before_collision'
+        elif detected_post:
+            stage = 'detected_too_late_same_step'
+        else:
+            stage = 'not_detected_before_collision'
+
+        self.last_collision_info = {
+            'robot_idx': int(robot_idx),
+            'type': 'unknown',
+            'obs_idx': int(unknown_idx),
+            'stage': stage,
+            'obs': unknown_obs[:3].tolist(),
+            'robot_pos': robot_pos[:2].tolist(),
+        }
+        print(
+            f"Unknown collision analysis: robot={robot_idx}, obs_idx={unknown_idx}, "
+            f"stage={stage}, obs={unknown_obs[:3]}, pos={robot_pos[:2]}"
+        )
+
+    @staticmethod
+    def _obs_in_memory(obs_memory, target_obs, pos_tol=1e-3, radius_tol=1e-2):
+        if obs_memory is None:
+            return False
+        mem = np.array(obs_memory, dtype=float)
+        if mem.size == 0:
+            return False
+        if mem.ndim == 1:
+            mem = mem.reshape(1, -1)
+        if mem.shape[1] < 3:
+            return False
+        center_diff = np.linalg.norm(mem[:, :2] - target_obs[:2], axis=1)
+        radius_diff = np.abs(mem[:, 2] - target_obs[2])
+        return bool(np.any((center_diff <= pos_tol) & (radius_diff <= radius_tol)))
 
     def update_goals_for_completed(self, robots_reached_goals):
         '''
         Asynchronously update goals only for robots that have reached their goals
         '''
         new_global_goals = self.update_global_goals()
+        self.global_goals = new_global_goals
         if new_global_goals is not None:
             for i, reached in enumerate(robots_reached_goals):
                 if reached: #only update goals with goal-reached robots
                     self.robot_goals[i] = new_global_goals[i]
-                    self.controller_list[i].set_waypoints([new_global_goals[i]])
+                    if self.use_astar_waypoints:
+                        waypoints = self._build_waypoints_for_robot(i, new_global_goals[i])
+                    else:
+                        waypoints = np.array([new_global_goals[i][:2]], dtype=float)
+                    self.controller_list[i].set_waypoints(waypoints)
             
             if self.show_animation:
                 self.global_goals_scatter.set_offsets(self.robot_goals)
 
     def update_global_goals(self):
         np_obstacle_map = self.get_obstacle_map()
+        self.latest_obstacle_map = np_obstacle_map
         np_frontier_map = self.get_frontier_map()
         #cv2.imshow('frontier', (np_frontier_map * 255).astype(np.uint8))
         #cv2.imshow('obstacle', (np_obstacle_map * 255).astype(np.uint8))
@@ -268,27 +496,229 @@ class ExplorationManager:
         # if any of the goals is None, return None for all goals (exploration is complete)
         if any(goal is None for goal in global_goals):
             return None
+        global_goals = np.array(global_goals, dtype=np.int32)
+        global_goals = self._adjust_goals_for_progress(
+            global_goals,
+            agent_positions,
+            np_frontier_map,
+            np_obstacle_map,
+        )
         return self.env_handler.grid_to_f(global_goals)
 
-    def get_obstacle_map(self):
+    def _adjust_goals_for_progress(self, global_goals, agent_positions, frontier_map, obstacle_map):
+        adjusted_goals = np.array(global_goals, dtype=np.int32, copy=True)
+        resolution = float(self.env_handler.resolution)
+        for i in range(self.num_robot):
+            cur = agent_positions[i][:2].astype(int)
+            goal = adjusted_goals[i]
+            reached_threshold = float(self.robot_specs[i].get('reached_threshold', 0.3))
+            requested_min_goal_distance = float(
+                self.robot_specs[i].get(
+                    'min_goal_distance',
+                    max(1.4 * reached_threshold, 0.9),
+                )
+            )
+            # Prevent near-goal deadlock (especially in CoScan), but avoid
+            # aggressive far-goal forcing that causes cross-map assignment swaps.
+            required_progress_distance = min(
+                requested_min_goal_distance,
+                max(reached_threshold + 0.25, 1.1 * reached_threshold),
+            )
+            reassignment_cells = max(int(np.ceil(required_progress_distance / resolution)), 2)
+
+            if np.linalg.norm(goal - cur) >= reassignment_cells:
+                continue
+
+            replacement = self._select_distant_reachable_frontier(
+                start_xy=(int(cur[0]), int(cur[1])),
+                frontier_map=frontier_map,
+                obstacle_map=obstacle_map,
+                min_dist_cells=reassignment_cells,
+                preferred_xy=(int(goal[0]), int(goal[1])),
+            )
+            if replacement is not None:
+                adjusted_goals[i] = replacement
+        return adjusted_goals
+
+    def _select_distant_reachable_frontier(self, start_xy, frontier_map, obstacle_map, min_dist_cells, preferred_xy=None):
+        frontier_idx = np.argwhere(frontier_map == 1)  # [y, x]
+        if frontier_idx.size == 0:
+            return None
+
+        frontier_xy = np.column_stack((frontier_idx[:, 1], frontier_idx[:, 0])).astype(np.int32)
+        distances = np.linalg.norm(frontier_xy - np.array(start_xy, dtype=float), axis=1)
+        valid_mask = distances >= float(min_dist_cells)
+        if np.any(valid_mask):
+            candidates = frontier_xy[valid_mask]
+            cand_dist = distances[valid_mask]
+            min_path_len = int(max(min_dist_cells, 2))
+            if preferred_xy is not None:
+                preferred_xy = np.array(preferred_xy, dtype=float).reshape(1, 2)
+                preferred_dist = np.linalg.norm(candidates.astype(float) - preferred_xy, axis=1)
+                # Favor candidates close to the original planner assignment, then shorter travel.
+                score = preferred_dist + 0.15 * cand_dist
+                order = np.argsort(score)
+            else:
+                order = np.argsort(cand_dist)
+        else:
+            # Startup and narrow-corridor fallback: pick the farthest reachable
+            # frontier even if none satisfy the preferred distance.
+            candidates = frontier_xy
+            cand_dist = distances
+            min_path_len = 2
+            order = np.argsort(-cand_dist)
+        max_checks = min(200, order.shape[0])
+
+        for idx in order[:max_checks]:
+            x, y = int(candidates[idx, 0]), int(candidates[idx, 1])
+            if obstacle_map[y, x] == 1:
+                continue
+            if self.use_astar_waypoints:
+                path = self._astar_grid(obstacle_map, start_xy, (x, y))
+                if path is None or len(path) < min_path_len:
+                    continue
+            return np.array([x, y], dtype=np.int32)
+        return None
+
+    def _build_waypoints_for_robot(self, robot_idx, goal_f, waypoint_stride_cells=None):
+        goal_f = np.asarray(goal_f, dtype=float).reshape(-1)
+        if goal_f.size < 2:
+            return np.array([goal_f[:2]], dtype=float)
+
+        obstacle_map = self.latest_obstacle_map
+        if obstacle_map is None:
+            return np.array([goal_f[:2]], dtype=float)
+
+        start_f = np.asarray(self.controller_list[robot_idx].robot.get_position(), dtype=float).reshape(-1)
+        start_grid = self.env_handler.f_to_grid(start_f[:2])
+        goal_grid = self.env_handler.f_to_grid(goal_f[:2])
+
+        height, width = obstacle_map.shape
+        sx = int(np.clip(start_grid[0], 0, width - 1))
+        sy = int(np.clip(start_grid[1], 0, height - 1))
+        gx = int(np.clip(goal_grid[0], 0, width - 1))
+        gy = int(np.clip(goal_grid[1], 0, height - 1))
+
+        if obstacle_map[gy, gx] == 1 or obstacle_map[sy, sx] == 1:
+            return np.array([goal_f[:2]], dtype=float)
+
+        path = self._astar_grid(obstacle_map, (sx, sy), (gx, gy))
+        if path is None or len(path) < 2:
+            return np.array([goal_f[:2]], dtype=float)
+
+        path_grid = np.array(path, dtype=int)
+        path_f = self.env_handler.grid_to_f(path_grid)[:, :2]
+        if path_f.shape[0] < 2:
+            return np.array([goal_f[:2]], dtype=float)
+
+        reached_threshold = float(self.robot_specs[robot_idx].get('reached_threshold', 0.3))
+        if waypoint_stride_cells is None:
+            waypoint_spacing = max(1.35 * reached_threshold, 1.2)
+        else:
+            waypoint_spacing = max(float(waypoint_stride_cells) * self.env_handler.resolution, 1e-3)
+
+        segment_lengths = np.linalg.norm(np.diff(path_f, axis=0), axis=1)
+        cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+        sample_distances = np.arange(waypoint_spacing, cumulative[-1], waypoint_spacing)
+
+        sample_indices = []
+        for dist in sample_distances:
+            idx = int(np.searchsorted(cumulative, dist, side='left'))
+            idx = min(max(idx, 1), len(path_f) - 1)
+            if len(sample_indices) == 0 or sample_indices[-1] != idx:
+                sample_indices.append(idx)
+
+        if len(sample_indices) == 0 or sample_indices[-1] != (len(path_f) - 1):
+            sample_indices.append(len(path_f) - 1)
+
+        sampled_f = path_f[np.array(sample_indices, dtype=int)]
+        if sampled_f.size == 0:
+            return np.array([goal_f[:2]], dtype=float)
+        return sampled_f
+
+    @staticmethod
+    def _astar_grid(obstacle_map, start, goal):
+        if start == goal:
+            return [start]
+
+        height, width = obstacle_map.shape
+        moves = [
+            (1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
+            (1, 1, np.sqrt(2.0)), (1, -1, np.sqrt(2.0)),
+            (-1, 1, np.sqrt(2.0)), (-1, -1, np.sqrt(2.0)),
+        ]
+
+        def heuristic(node):
+            return np.hypot(node[0] - goal[0], node[1] - goal[1])
+
+        open_heap = []
+        heapq.heappush(open_heap, (heuristic(start), 0.0, start))
+        came_from = {}
+        g_score = {start: 0.0}
+        visited = set()
+
+        while open_heap:
+            _, current_g, current = heapq.heappop(open_heap)
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current == goal:
+                path = [current]
+                while current in came_from:
+                    current = came_from[current]
+                    path.append(current)
+                path.reverse()
+                return path
+
+            cx, cy = current
+            for dx, dy, move_cost in moves:
+                nx = cx + dx
+                ny = cy + dy
+                if nx < 0 or nx >= width or ny < 0 or ny >= height:
+                    continue
+                if obstacle_map[ny, nx] == 1:
+                    continue
+                neighbor = (nx, ny)
+                tentative_g = current_g + move_cost
+                if tentative_g >= g_score.get(neighbor, np.inf):
+                    continue
+                g_score[neighbor] = tentative_g
+                came_from[neighbor] = current
+                heapq.heappush(open_heap, (tentative_g + heuristic(neighbor), tentative_g, neighbor))
+
+        return None
+
+    def get_coverage_ratio(self):
+        if self.merged_global_map is None or self.merged_global_map.is_empty:
+            return 0.0
+
+        observed = self.merged_global_map.intersection(self.env_workspace)
+        if not self.env_obstacles.is_empty:
+            observed = observed.difference(self.env_obstacles)
+
+        coverage_ratio = float(observed.area) / self.free_space_area
+        return float(np.clip(coverage_ratio, 0.0, 1.0))
+
+    def _compute_static_obstacle_map(self):
         obstacle_map = np.zeros(self.env_handler.get_map_shape(), dtype=np.int8)
-        
-        # Get the map dimensions
+        if self.env_obstacles.is_empty:
+            return obstacle_map
+
         height, width = self.env_handler.get_map_shape()
-        
-        # Create a grid of points
         y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
         grid_points = np.column_stack((x.ravel(), y.ravel()))
-        
-        # Convert grid points to continuous space
         cont_points = self.env_handler.grid_to_f(grid_points)
-        
-        # Check each point if it's inside any obstacle
-        for point in cont_points:
-            if self.env_obstacles.contains(Point(point)):
-                grid_x, grid_y = self.env_handler.f_to_grid(point)
-                obstacle_map[grid_y, grid_x] = 1
-        return obstacle_map
+
+        contains_mask = np.fromiter(
+            (self.env_obstacles.contains(Point(p)) for p in cont_points),
+            dtype=np.bool_,
+            count=cont_points.shape[0],
+        )
+        return contains_mask.reshape(height, width).astype(np.int8)
+
+    def get_obstacle_map(self):
+        return self.static_obstacle_map.copy()
     
     def get_frontier_map(self):
         frontier_map = np.zeros(self.env_handler.get_map_shape(), dtype=np.int8)
@@ -320,7 +750,10 @@ class ExplorationManager:
         '''
         Update visualization elements
         '''
-        self.frontiers_scatter.set_offsets(self.frontiers.coords)
+        if len(self.frontiers.coords) > 0:
+            self.frontiers_scatter.set_offsets(np.array(self.frontiers.coords))
+        else:
+            self.frontiers_scatter.set_offsets(np.empty((0, 2)))
         self.controller_list[0].draw_plot()
 
     def exploration_complete(self):

@@ -1,0 +1,421 @@
+import argparse
+import math
+import os
+import sys
+
+import numpy as np
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+
+def build_indoor_exploration_env():
+    env_width = 24.0
+    env_height = 18.0
+    e_wall = 2.0
+
+    def _split_with_doors(start, end, door_intervals, max_seg_len=1.8):
+        intervals = [(float(start), float(end))]
+        for ds, de in sorted(door_intervals):
+            next_intervals = []
+            for s0, e0 in intervals:
+                if de <= s0 or ds >= e0:
+                    next_intervals.append((s0, e0))
+                    continue
+                if ds > s0:
+                    next_intervals.append((s0, min(ds, e0)))
+                if de < e0:
+                    next_intervals.append((max(de, s0), e0))
+            intervals = next_intervals
+
+        split_intervals = []
+        for s0, e0 in intervals:
+            length = max(e0 - s0, 0.0)
+            if length < 0.25:
+                continue
+            num_seg = max(int(np.ceil(length / max_seg_len)), 1)
+            seg_len = length / num_seg
+            for i in range(num_seg):
+                ss = s0 + i * seg_len
+                ee = s0 + (i + 1) * seg_len
+                if ee - ss > 0.2:
+                    split_intervals.append((ss, ee))
+        return split_intervals
+
+    def _vertical_wall(x, y_min, y_max, door_intervals, half_thickness=0.35):
+        segs = _split_with_doors(y_min, y_max, door_intervals)
+        return [[x, 0.5 * (s + e), half_thickness, 0.5 * (e - s), e_wall, 0.0, 1.0] for s, e in segs]
+
+    def _horizontal_wall(y, x_min, x_max, door_intervals, half_thickness=0.35):
+        segs = _split_with_doors(x_min, x_max, door_intervals)
+        return [[0.5 * (s + e), y, 0.5 * (e - s), half_thickness, e_wall, 0.0, 1.0] for s, e in segs]
+
+    interior_walls = []
+    # Boundary-connected indoor partitions with wide doors.
+    interior_walls += _vertical_wall(16.0, 0.0, 18.0, door_intervals=[(1.2, 13.4), (14.8, 17.2)])
+    interior_walls += _horizontal_wall(13.0, 0.0, 7.0, door_intervals=[(1.2, 5.8)])
+    interior_walls = np.array(interior_walls, dtype=np.float64)
+
+    known_circles = np.array(
+        [
+            [3.2, 3.0, 0.36],
+            [3.0, 15.6, 0.36],
+            [9.4, 4.4, 0.30],
+            [10.8, 14.6, 0.38],
+            [12.6, 6.4, 0.36],
+            [18.4, 6.8, 0.38],
+            [20.6, 14.8, 0.36],
+            [21.0, 10.2, 0.36],
+        ],
+        dtype=np.float64,
+    )
+    known_circles = np.hstack((known_circles, np.zeros((known_circles.shape[0], 4))))
+
+    known_obs = np.vstack((known_circles, interior_walls))
+
+    unknown_obs = np.array(
+        [
+            [2.6, 7.8, 0.22],
+            [2.8, 11.4, 0.22],
+            [5.4, 10.6, 0.22],
+            [5.6, 15.2, 0.22],
+            [8.8, 6.2, 0.22],
+            [9.8, 11.8, 0.22],
+            [8.6, 16.2, 0.22],
+            [11.8, 3.2, 0.22],
+            [12.4, 12.6, 0.22],
+            [12.6, 8.0, 0.22],
+            [14.2, 6.8, 0.22],
+            [14.8, 14.4, 0.22],
+            [17.4, 8.8, 0.22],
+            [18.2, 12.2, 0.22],
+            [17.2, 15.4, 0.22],
+            [19.4, 9.8, 0.22],
+            [20.8, 11.6, 0.22],
+            [21.8, 6.6, 0.22],
+            [21.8, 15.2, 0.22],
+            [22.0, 7.8, 0.22],
+            [22.2, 14.2, 0.22],
+        ],
+        dtype=np.float64,
+    )
+
+    return env_width, env_height, known_obs, unknown_obs
+
+
+def build_open_exploration_env():
+    env_width = 24.0
+    env_height = 18.0
+    e_wall = 2.0
+
+    # Open map: only a few short wall pieces, but many known/unknown obstacles.
+    short_walls = np.array(
+        [
+            [21.0, 13.0, 1.6, 0.35, e_wall, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    known_circles = np.array(
+        [
+            [3.2, 3.0, 0.45],
+            [3.2, 9.0, 0.45],
+            [3.2, 15.0, 0.45],
+            [7.2, 4.0, 0.48],
+            [7.2, 10.0, 0.48],
+            [7.2, 15.0, 0.48],
+            [12.0, 6.2, 0.48],
+            [12.0, 12.0, 0.48],
+            [16.8, 3.2, 0.48],
+            [16.8, 9.2, 0.48],
+            [16.8, 15.0, 0.48],
+            [21.8, 6.0, 0.46],
+            [21.8, 11.8, 0.46],
+        ],
+        dtype=np.float64,
+    )
+    known_circles = np.hstack((known_circles, np.zeros((known_circles.shape[0], 4))))
+
+    known_obs = np.vstack((known_circles, short_walls))
+
+    unknown_obs = np.array(
+        [
+            [2.4, 6.0, 0.22],
+            [2.6, 12.0, 0.22],
+            [4.8, 8.0, 0.22],
+            [5.6, 13.4, 0.22],
+            [8.6, 6.2, 0.22],
+            [8.8, 12.8, 0.22],
+            [10.6, 3.6, 0.22],
+            [10.8, 9.6, 0.22],
+            [10.8, 15.0, 0.22],
+            [13.6, 4.4, 0.22],
+            [13.6, 10.0, 0.22],
+            [13.6, 14.8, 0.22],
+            [17.4, 5.8, 0.22],
+            [17.6, 11.2, 0.22],
+            [18.4, 14.6, 0.22],
+            [21.0, 8.6, 0.22],
+            [22.2, 10.0, 0.22],
+            [22.2, 14.2, 0.22],
+        ],
+        dtype=np.float64,
+    )
+
+    return env_width, env_height, known_obs, unknown_obs
+
+
+def build_stress_unknown_obs(layout):
+    if layout == 'indoor':
+        return np.array(
+            [
+                [5.2, 5.0, 0.24],
+                [6.2, 8.8, 0.24],
+                [7.2, 13.8, 0.24],
+                [9.0, 7.2, 0.24],
+                [11.0, 5.4, 0.24],
+                [11.6, 9.8, 0.24],
+                [13.8, 9.2, 0.24],
+                [15.0, 11.8, 0.24],
+                [17.0, 5.6, 0.24],
+                [18.8, 8.8, 0.24],
+                [19.8, 13.8, 0.24],
+                [21.2, 9.6, 0.24],
+            ],
+            dtype=np.float64,
+        )
+
+    return np.array(
+        [
+            [4.6, 5.6, 0.24],
+            [5.4, 11.0, 0.24],
+            [6.8, 8.0, 0.24],
+            [8.8, 4.8, 0.24],
+            [9.2, 13.8, 0.24],
+            [11.0, 8.0, 0.24],
+            [12.6, 4.6, 0.24],
+            [13.2, 13.4, 0.24],
+            [15.4, 7.0, 0.24],
+            [17.2, 4.8, 0.24],
+            [17.8, 13.2, 0.24],
+            [20.4, 9.8, 0.24],
+        ],
+        dtype=np.float64,
+    )
+
+
+def build_initial_states(num_agent):
+    candidates = np.array(
+        [
+            [2.0, 2.0, 0.0],
+            [2.0, 16.0, -math.pi / 2.0],
+            [22.0, 4.0, math.pi],
+        ],
+        dtype=np.float64,
+    )
+    if num_agent < 1 or num_agent > candidates.shape[0]:
+        raise ValueError("num_agent must be in [1, 3] for this test scenario.")
+    return [candidates[i] for i in range(num_agent)]
+
+
+def get_robot_specs(num_agent, use_astar):
+    robot_specs = []
+    for robot_id in range(num_agent):
+        if use_astar:
+            robot_spec = {
+                'model': 'DoubleIntegrator2D',
+                'v_max': 1.35,
+                'a_max': 1.9,
+                'radius': 0.15,
+                'sensor': 'rgbd',
+                'fov_angle': 70.0,
+                'cam_range': 4.5,
+                'num_constraints': 24,
+                'reached_threshold': 1.8,
+                'min_goal_distance': 2.6,
+                'nominal_k_v': 2.2,
+                'nominal_k_a': 2.2,
+                'unknown_obs_detection': 'fov',
+                'exploration': True,
+                'robot_id': robot_id,
+                'mpc_horizon': 12,
+                'mpc_cbf_alpha1': 0.55,
+                'mpc_cbf_alpha2': 0.55,
+            }
+        else:
+            robot_spec = {
+                'model': 'DoubleIntegrator2D',
+                'v_max': 1.45,
+                'a_max': 2.0,
+                'radius': 0.18,
+                'sensor': 'rgbd',
+                'fov_angle': 70.0,
+                'cam_range': 4.5,
+                'num_constraints': 20,
+                'reached_threshold': 1.6,
+                'min_goal_distance': 2.2,
+                'nominal_k_v': 2.4,
+                'nominal_k_a': 2.3,
+                'unknown_obs_detection': 'fov',
+                'exploration': True,
+                'robot_id': robot_id,
+                'mpc_horizon': 10,
+                'mpc_cbf_alpha1': 0.45,
+                'mpc_cbf_alpha2': 0.45,
+            }
+        robot_specs.append(robot_spec)
+    return robot_specs
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Run exploration test scenario.')
+    parser.add_argument('--num_agent', type=int, default=2, help='Number of robots (supported: 1, 2, 3).')
+    parser.add_argument(
+        '--algo',
+        type=str,
+        default='frontier',
+        choices=['coscan', 'frontier'],
+        help='Exploration algorithm: coscan or frontier.',
+    )
+    parser.add_argument(
+        '--layout',
+        type=str,
+        default='auto',
+        choices=['auto', 'indoor', 'open'],
+        help='Environment layout: indoor (wall-heavy), open (obstacle-heavy), or auto.',
+    )
+    astar_group = parser.add_mutually_exclusive_group()
+    astar_group.add_argument('--use_astar', dest='use_astar', action='store_true', help='Enable A* corridor waypoints.')
+    astar_group.add_argument('--no-astar', dest='use_astar', action='store_false', help='Disable A* waypoints.')
+    parser.set_defaults(use_astar=True)
+    parser.add_argument(
+        '--attitude',
+        type=str,
+        default='velocity_tracking_yaw',
+        choices=['velocity_tracking_yaw', 'visibility_area', 'simple', 'visibility_raycast', 'gatekeeper', 'visibility'],
+        help='Attitude controller name.',
+    )
+    parser.add_argument(
+        '--pos_controller',
+        type=str,
+        default='mpc_cbf',
+        choices=['cbf_qp', 'mpc_cbf'],
+        help='Position controller name.',
+    )
+    parser.add_argument('--coverage_target', type=float, default=0.98, help='Coverage ratio target for success.')
+    parser.add_argument(
+        '--unknown_profile',
+        type=str,
+        default='default',
+        choices=['default', 'stress'],
+        help='Unknown-obstacle profile: default or stress (denser, harder).',
+    )
+    parser.add_argument('--map_resolution', type=float, default=0.16, help='Exploration map resolution [m/cell].')
+    parser.add_argument('--seed', type=int, default=2, help='Random seed for deterministic planning behavior.')
+    parser.add_argument('--fov_angle', type=float, default=None, help='Override robot FoV angle in degrees.')
+    parser.add_argument('--cam_range', type=float, default=None, help='Override robot camera range in meters.')
+    persistent_group = parser.add_mutually_exclusive_group()
+    persistent_group.add_argument(
+        '--persistent_unknown_fov',
+        dest='persistent_unknown_fov',
+        action='store_true',
+        help='Persist unknown obstacles after first detection (FoV mode).',
+    )
+    persistent_group.add_argument(
+        '--no-persistent_unknown_fov',
+        dest='persistent_unknown_fov',
+        action='store_false',
+        help='Do not persist unknown obstacles after they leave instantaneous FoV.',
+    )
+    parser.set_defaults(persistent_unknown_fov=True)
+    parser.add_argument('--save_anim', action='store_true', help='Save animation as mp4 (rendering required).')
+    parser.add_argument('--no_render', action='store_true', help='Disable live rendering (headless run).')
+    parser.add_argument('--dt', type=float, default=0.1, help='Simulation step size.')
+    parser.add_argument('--tf', type=float, default=300.0, help='Simulation horizon in seconds.')
+    unknown_group = parser.add_mutually_exclusive_group()
+    unknown_group.add_argument('--unknown', dest='unknown', action='store_true', help='Enable unknown obstacles.')
+    unknown_group.add_argument('--no-unknown', dest='unknown', action='store_false', help='Disable unknown obstacles.')
+    parser.set_defaults(unknown=True)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    np.random.seed(args.seed)
+
+    if args.no_render:
+        import matplotlib
+
+        matplotlib.use('Agg')
+
+    from exploration import ExplorationManager
+    from safe_control.utils import env
+
+    if args.layout == 'auto':
+        layout = 'indoor' if args.use_astar else 'open'
+    else:
+        layout = args.layout
+
+    if layout == 'indoor':
+        env_width, env_height, known_obs, unknown_obs = build_indoor_exploration_env()
+    else:
+        env_width, env_height, known_obs, unknown_obs = build_open_exploration_env()
+
+    if not args.unknown:
+        unknown_obs = np.empty((0, 3), dtype=np.float64)
+    elif args.unknown_profile == 'stress':
+        unknown_obs = np.vstack((unknown_obs, build_stress_unknown_obs(layout)))
+
+    show_animation = not args.no_render
+    save_animation = args.save_anim and show_animation
+    if args.no_render and args.save_anim:
+        print('`--save_anim` requires rendering. Ignoring save request because `--no_render` is set.')
+
+    x0s = build_initial_states(args.num_agent)
+    robot_specs = get_robot_specs(args.num_agent, use_astar=args.use_astar)
+    for robot_spec in robot_specs:
+        if args.fov_angle is not None:
+            robot_spec['fov_angle'] = float(args.fov_angle)
+        if args.cam_range is not None:
+            robot_spec['cam_range'] = float(args.cam_range)
+        robot_spec['unknown_obs_persistent_fov'] = bool(args.persistent_unknown_fov)
+    env_handler = env.Env(
+        width=env_width,
+        height=env_height,
+        known_obs=known_obs,
+        resolution=args.map_resolution,
+    )
+
+    controller_type = {
+        'pos': args.pos_controller,
+        'att': args.attitude,
+    }
+
+    exploration_algorithm = 'CoScan' if args.algo == 'coscan' else 'Frontier'
+    manager = ExplorationManager(
+        x0s,
+        robot_specs,
+        controller_type,
+        exploration_algorithm=exploration_algorithm,
+        dt=args.dt,
+        show_animation=show_animation,
+        save_animation=save_animation,
+        env_handler=env_handler,
+        known_obs=known_obs,
+        unknown_obs=unknown_obs,
+        use_astar_waypoints=args.use_astar,
+        coverage_target=args.coverage_target,
+    )
+
+    max_steps = int(args.tf / args.dt)
+    success = manager.explore(max_steps=max_steps)
+    if success:
+        print('Success!')
+    else:
+        print('Failed!')
+
+
+if __name__ == '__main__':
+    main()
