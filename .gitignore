@@ -11,3 +11,5 @@ output/
 
 # Currently ignore visibility_rrt, will be updated as a submodule later
 visibility_rrt/
+.venv/
+uv.lock
