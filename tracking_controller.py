@@ -113,6 +113,21 @@ class LocalTrackingController(_BaseLocalTrackingController):
         if all_obs.ndim == 1:
             all_obs = all_obs.reshape(1, -1)
 
+        # Inflate obstacle size used by CBF constraints to absorb solver and
+        # discretization errors near obstacle boundaries.
+        obs_margin = float(self.robot_spec.get('known_obs_cbf_margin', 0.08))
+        if obs_margin > 0.0:
+            all_obs = all_obs.copy()
+            shape_flag = all_obs[:, 6] if all_obs.shape[1] > 6 else np.zeros(all_obs.shape[0])
+            is_super = shape_flag > 0.5
+            # Circle-like obstacles: radius field a/r at column 2.
+            all_obs[~is_super, 2] = all_obs[~is_super, 2] + obs_margin
+            # Superellipse obstacles: inflate both semi-axes a and b.
+            if np.any(is_super):
+                all_obs[is_super, 2] = all_obs[is_super, 2] + obs_margin
+                if all_obs.shape[1] > 3:
+                    all_obs[is_super, 3] = all_obs[is_super, 3] + obs_margin
+
         robot_pos = self.robot.get_position()
         robot_yaw = self.robot.get_orientation()
         to_obs_vectors = all_obs[:, :2] - robot_pos.reshape(1, -1)

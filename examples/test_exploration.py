@@ -240,6 +240,7 @@ def get_robot_specs(num_agent, use_astar):
                 'unknown_obs_detection': 'fov',
                 'exploration': True,
                 'robot_id': robot_id,
+                'visibility_violation_mode': 'safety_area',
                 'mpc_horizon': 12,
                 'mpc_cbf_alpha1': 0.55,
                 'mpc_cbf_alpha2': 0.55,
@@ -261,6 +262,7 @@ def get_robot_specs(num_agent, use_astar):
                 'unknown_obs_detection': 'fov',
                 'exploration': True,
                 'robot_id': robot_id,
+                'visibility_violation_mode': 'safety_area',
                 'mpc_horizon': 10,
                 'mpc_cbf_alpha1': 0.45,
                 'mpc_cbf_alpha2': 0.45,
@@ -282,20 +284,70 @@ def parse_args():
     parser.add_argument(
         '--layout',
         type=str,
-        default='auto',
-        choices=['auto', 'indoor', 'open'],
-        help='Environment layout: indoor (wall-heavy), open (obstacle-heavy), or auto.',
+        default='indoor',
+        choices=['indoor', 'open'],
+        help='Environment layout: indoor (wall-heavy) or open (obstacle-heavy).',
     )
     astar_group = parser.add_mutually_exclusive_group()
     astar_group.add_argument('--use_astar', dest='use_astar', action='store_true', help='Enable A* corridor waypoints.')
     astar_group.add_argument('--no-astar', dest='use_astar', action='store_false', help='Disable A* waypoints.')
-    parser.set_defaults(use_astar=True)
+    parser.set_defaults(use_astar=None)
     parser.add_argument(
         '--attitude',
         type=str,
         default='velocity_tracking_yaw',
         choices=['velocity_tracking_yaw', 'visibility_area', 'simple', 'visibility_raycast', 'gatekeeper', 'visibility'],
         help='Attitude controller name.',
+    )
+    parser.add_argument(
+        '--gatekeeper_nominal',
+        type=str,
+        default='visibility_area',
+        choices=['visibility_area', 'simple', 'velocity_tracking_yaw'],
+        help='Nominal attitude controller used inside gatekeeper.',
+    )
+    parser.add_argument(
+        '--gatekeeper_backup',
+        type=str,
+        default='velocity_tracking_yaw',
+        choices=['velocity_tracking_yaw', 'simple'],
+        help='Backup attitude controller used inside gatekeeper.',
+    )
+    parser.add_argument(
+        '--gatekeeper_nominal_horizon',
+        type=float,
+        default=0.1,
+        help='Gatekeeper nominal horizon [s].',
+    )
+    parser.add_argument(
+        '--gatekeeper_backup_horizon',
+        type=float,
+        default=2.0,
+        help='Gatekeeper backup horizon [s].',
+    )
+    parser.add_argument(
+        '--gatekeeper_event_offset',
+        type=float,
+        default=0.0,
+        help='Gatekeeper event offset [s].',
+    )
+    parser.add_argument(
+        '--gatekeeper_horizon_discount',
+        type=float,
+        default=0.1,
+        help='Gatekeeper nominal-horizon discount step [s].',
+    )
+    parser.add_argument(
+        '--gatekeeper_validation_slack',
+        type=float,
+        default=0.12,
+        help='Extra slack [m] for braking-distance monitor.',
+    )
+    parser.add_argument(
+        '--gatekeeper_braking_margin',
+        type=float,
+        default=0.35,
+        help='Extra conservative braking margin [m].',
     )
     parser.add_argument(
         '--pos_controller',
@@ -316,20 +368,34 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=2, help='Random seed for deterministic planning behavior.')
     parser.add_argument('--fov_angle', type=float, default=None, help='Override robot FoV angle in degrees.')
     parser.add_argument('--cam_range', type=float, default=None, help='Override robot camera range in meters.')
-    persistent_group = parser.add_mutually_exclusive_group()
-    persistent_group.add_argument(
-        '--persistent_unknown_fov',
-        dest='persistent_unknown_fov',
+    parser.add_argument('--w_max', type=float, default=None, help='Override robot max yaw rate [rad/s].')
+    unknown_memory_group = parser.add_mutually_exclusive_group()
+    unknown_memory_group.add_argument(
+        '--remember_unknown_obs',
+        dest='remember_unknown_obs',
         action='store_true',
-        help='Persist unknown obstacles after first detection (FoV mode).',
+        help='Keep unknown obstacles in each robot map after first detection.',
     )
-    persistent_group.add_argument(
-        '--no-persistent_unknown_fov',
-        dest='persistent_unknown_fov',
+    unknown_memory_group.add_argument(
+        '--forget_unknown_obs',
+        dest='remember_unknown_obs',
         action='store_false',
-        help='Do not persist unknown obstacles after they leave instantaneous FoV.',
+        help='Track unknown obstacles only while they are currently visible.',
     )
-    parser.set_defaults(persistent_unknown_fov=True)
+    # Backward-compatible aliases (hidden in help text).
+    unknown_memory_group.add_argument(
+        '--persistent_unknown_fov',
+        dest='remember_unknown_obs',
+        action='store_true',
+        help=argparse.SUPPRESS,
+    )
+    unknown_memory_group.add_argument(
+        '--no-persistent_unknown_fov',
+        dest='remember_unknown_obs',
+        action='store_false',
+        help=argparse.SUPPRESS,
+    )
+    parser.set_defaults(remember_unknown_obs=True)
     parser.add_argument('--save_anim', action='store_true', help='Save animation as mp4 (rendering required).')
     parser.add_argument('--no_render', action='store_true', help='Disable live rendering (headless run).')
     parser.add_argument('--dt', type=float, default=0.1, help='Simulation step size.')
@@ -353,10 +419,8 @@ def main():
     from exploration import ExplorationManager
     from safe_control.utils import env
 
-    if args.layout == 'auto':
-        layout = 'indoor' if args.use_astar else 'open'
-    else:
-        layout = args.layout
+    layout = args.layout
+    use_astar = (layout == 'indoor') if args.use_astar is None else bool(args.use_astar)
 
     if layout == 'indoor':
         env_width, env_height, known_obs, unknown_obs = build_indoor_exploration_env()
@@ -374,13 +438,25 @@ def main():
         print('`--save_anim` requires rendering. Ignoring save request because `--no_render` is set.')
 
     x0s = build_initial_states(args.num_agent)
-    robot_specs = get_robot_specs(args.num_agent, use_astar=args.use_astar)
+    robot_specs = get_robot_specs(args.num_agent, use_astar=use_astar)
     for robot_spec in robot_specs:
         if args.fov_angle is not None:
             robot_spec['fov_angle'] = float(args.fov_angle)
         if args.cam_range is not None:
             robot_spec['cam_range'] = float(args.cam_range)
-        robot_spec['unknown_obs_persistent_fov'] = bool(args.persistent_unknown_fov)
+        if args.w_max is not None:
+            robot_spec['w_max'] = float(args.w_max)
+        robot_spec['unknown_obs_persistent_fov'] = bool(args.remember_unknown_obs)
+        if args.attitude == 'gatekeeper':
+            robot_spec['w_max'] = float(robot_spec.get('w_max', 1.2))
+            robot_spec['gatekeeper_nominal'] = args.gatekeeper_nominal
+            robot_spec['gatekeeper_backup'] = args.gatekeeper_backup
+            robot_spec['gatekeeper_nominal_horizon'] = float(args.gatekeeper_nominal_horizon)
+            robot_spec['gatekeeper_backup_horizon'] = float(args.gatekeeper_backup_horizon)
+            robot_spec['gatekeeper_event_offset'] = float(args.gatekeeper_event_offset)
+            robot_spec['gatekeeper_horizon_discount'] = float(args.gatekeeper_horizon_discount)
+            robot_spec['gatekeeper_validation_slack'] = float(args.gatekeeper_validation_slack)
+            robot_spec['gatekeeper_braking_distance_margin'] = float(args.gatekeeper_braking_margin)
     env_handler = env.Env(
         width=env_width,
         height=env_height,
@@ -405,12 +481,27 @@ def main():
         env_handler=env_handler,
         known_obs=known_obs,
         unknown_obs=unknown_obs,
-        use_astar_waypoints=args.use_astar,
+        use_astar_waypoints=use_astar,
         coverage_target=args.coverage_target,
     )
 
     max_steps = int(args.tf / args.dt)
     success = manager.explore(max_steps=max_steps)
+    violation_counts = [len(controller.robot.unsafe_points) for controller in manager.controller_list]
+    print(f'Visibility violations per robot: {violation_counts} (total={sum(violation_counts)})')
+    if args.attitude == 'gatekeeper':
+        gk_stats = []
+        for i, controller in enumerate(manager.controller_list):
+            att_ctrl = getattr(controller, 'att_controller', None)
+            if att_ctrl is not None and hasattr(att_ctrl, 'get_stats'):
+                stats = att_ctrl.get_stats()
+                gk_stats.append(
+                    f"r{i}: replans={stats['replans']}, accepted={stats['accepted']}, rejected={stats['rejected']}, "
+                    f"nominal_commits={stats['nominal_commits']}, "
+                    f"nominal_max={stats['nominal_seconds_max']:.2f}s, nominal_avg={stats['nominal_seconds_avg_per_commit']:.2f}s"
+                )
+        if gk_stats:
+            print('Gatekeeper nominal usage -> ' + ' | '.join(gk_stats))
     if success:
         print('Success!')
     else:
