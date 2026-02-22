@@ -4,6 +4,71 @@ from safe_control.tracking import LocalTrackingController as _BaseLocalTrackingC
 
 
 class LocalTrackingController(_BaseLocalTrackingController):
+    _DYNAMIC_OBS_FLAG = 2.0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.other_agents = np.empty((0, 5), dtype=float)
+
+        # Use local MPC-CBF extension that supports dynamic-obstacle CBF terms.
+        if self.pos_controller_type == 'mpc_cbf':
+            from position_controller import SeamlisMPCCBF
+
+            self.pos_controller = SeamlisMPCCBF(
+                self.robot,
+                self.robot_spec,
+                show_mpc_traj=self.show_mpc_traj,
+                num_obs=self.num_constraints,
+            )
+            if self.att_controller_type == 'gatekeeper' and self.att_controller is not None:
+                if hasattr(self.att_controller, 'setup_pos_controller'):
+                    self.att_controller.setup_pos_controller(self.pos_controller)
+
+    def set_other_agents(self, other_agents):
+        other_agents = np.array(other_agents, dtype=float)
+        if other_agents.size == 0:
+            self.other_agents = np.empty((0, 5), dtype=float)
+            return
+        if other_agents.ndim == 1:
+            other_agents = other_agents.reshape(1, -1)
+        if other_agents.shape[1] > 5:
+            other_agents = other_agents[:, :5]
+        elif other_agents.shape[1] < 5:
+            pad = np.zeros((other_agents.shape[0], 5 - other_agents.shape[1]), dtype=float)
+            other_agents = np.hstack((other_agents, pad))
+        self.other_agents = other_agents
+
+    def _build_inter_agent_dynamic_obs(self):
+        if self.other_agents.size == 0:
+            return np.empty((0, 7), dtype=float)
+
+        robot_pos = np.asarray(self.robot.get_position(), dtype=float).reshape(-1)
+        agent_margin = float(self.robot_spec.get('inter_agent_margin', 0.08))
+        max_range = float(self.robot_spec.get('inter_agent_obs_range', 8.0))
+        obs_flag = self._DYNAMIC_OBS_FLAG if self.pos_controller_type == 'mpc_cbf' else 0.0
+
+        obs_rows = []
+        for agent in self.other_agents:
+            ox, oy, vx, vy, other_radius = agent[:5]
+            dx = ox - robot_pos[0]
+            dy = oy - robot_pos[1]
+            if np.hypot(dx, dy) > max_range:
+                continue
+
+            obs_rows.append([
+                float(ox),
+                float(oy),
+                float(max(other_radius + agent_margin, 1e-3)),
+                float(vx),
+                float(vy),
+                0.0,
+                obs_flag,
+            ])
+
+        if len(obs_rows) == 0:
+            return np.empty((0, 7), dtype=float)
+        return np.array(obs_rows, dtype=float)
+
     def update_goal(self):
         if self.robot_spec['model'] in ['Quad3D']:
             n_pos = 3
@@ -99,16 +164,31 @@ class LocalTrackingController(_BaseLocalTrackingController):
             detected_arr = detected_arr.copy()
             detected_arr[:, 2] = detected_arr[:, 2] + unknown_margin
 
-        if detected_arr.size != 0:
-            if len(self.obs) == 0:
-                all_obs = detected_arr
-            else:
-                all_obs = np.vstack((self.obs, detected_arr))
-        else:
-            all_obs = self.obs
+        dynamic_agents = self._build_inter_agent_dynamic_obs()
 
-        if len(all_obs) == 0:
+        obs_blocks = []
+        mask_blocks = []
+
+        if len(self.obs) != 0:
+            known_obs = np.array(self.obs, dtype=float)
+            if known_obs.ndim == 1:
+                known_obs = known_obs.reshape(1, -1)
+            obs_blocks.append(known_obs)
+            mask_blocks.append(np.zeros(known_obs.shape[0], dtype=bool))
+
+        if detected_arr.size != 0:
+            obs_blocks.append(detected_arr)
+            mask_blocks.append(np.ones(detected_arr.shape[0], dtype=bool))
+
+        if dynamic_agents.size != 0:
+            obs_blocks.append(dynamic_agents)
+            mask_blocks.append(np.zeros(dynamic_agents.shape[0], dtype=bool))
+
+        if len(obs_blocks) == 0:
             return None
+
+        all_obs = np.vstack(obs_blocks)
+        unknown_mask = np.concatenate(mask_blocks)
 
         if all_obs.ndim == 1:
             all_obs = all_obs.reshape(1, -1)
@@ -119,7 +199,7 @@ class LocalTrackingController(_BaseLocalTrackingController):
         if obs_margin > 0.0:
             all_obs = all_obs.copy()
             shape_flag = all_obs[:, 6] if all_obs.shape[1] > 6 else np.zeros(all_obs.shape[0])
-            is_super = shape_flag > 0.5
+            is_super = np.isclose(shape_flag, 1.0)
             # Circle-like obstacles: radius field a/r at column 2.
             all_obs[~is_super, 2] = all_obs[~is_super, 2] + obs_margin
             # Superellipse obstacles: inflate both semi-axes a and b.
@@ -150,11 +230,6 @@ class LocalTrackingController(_BaseLocalTrackingController):
             candidate_indices = np.where(candidate_mask)[0]
         else:
             candidate_indices = np.arange(all_obs.shape[0], dtype=int)
-
-        # Slightly prioritize unknown-detected obstacles when distances are similar.
-        unknown_mask = np.zeros(all_obs.shape[0], dtype=bool)
-        if detected_arr.size != 0:
-            unknown_mask[-detected_arr.shape[0]:] = True
 
         ordered_candidates = candidate_indices[np.argsort(clearances[candidate_indices])]
         nearest_indices = ordered_candidates[:obs_num].astype(int, copy=True)

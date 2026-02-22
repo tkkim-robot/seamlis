@@ -381,13 +381,67 @@ class ExplorationManager:
         if self.show_animation:
             self.global_goals_scatter.set_offsets(self.global_goals)
 
+    def _extract_planar_velocity(self, controller):
+        robot = controller.robot
+        model = str(controller.robot_spec.get('model', ''))
+        x = np.asarray(robot.X, dtype=float).reshape(-1)
+
+        if model == 'DoubleIntegrator2D' and x.shape[0] >= 4:
+            return np.array([x[2], x[3]], dtype=float)
+        if model == 'SingleIntegrator2D':
+            u = np.asarray(robot.U, dtype=float).reshape(-1)
+            if u.shape[0] >= 2:
+                return np.array([u[0], u[1]], dtype=float)
+            return np.zeros(2, dtype=float)
+        if model in ['Unicycle2D', 'DynamicUnicycle2D', 'KinematicBicycle2D', 'KinematicBicycle2D_C3BF', 'KinematicBicycle2D_DPCBF']:
+            yaw = float(robot.get_orientation())
+            if model == 'Unicycle2D':
+                u = np.asarray(robot.U, dtype=float).reshape(-1)
+                speed = float(u[0]) if u.shape[0] > 0 else 0.0
+            else:
+                speed = float(x[3]) if x.shape[0] > 3 else 0.0
+            return np.array([speed * np.cos(yaw), speed * np.sin(yaw)], dtype=float)
+        return np.zeros(2, dtype=float)
+
+    def _build_agent_state_snapshot(self):
+        snapshot = []
+        for controller in self.controller_list:
+            pos = np.asarray(controller.robot.get_position(), dtype=float).reshape(-1)
+            vel = self._extract_planar_velocity(controller)
+            radius = float(controller.robot.robot_radius)
+            snapshot.append([pos[0], pos[1], vel[0], vel[1], radius])
+        if len(snapshot) == 0:
+            return np.empty((0, 5), dtype=float)
+        return np.array(snapshot, dtype=float)
+
+    def _check_inter_agent_collision(self):
+        if self.num_robot < 2:
+            return None
+        for i in range(self.num_robot):
+            pi = np.asarray(self.controller_list[i].robot.get_position(), dtype=float).reshape(-1)
+            ri = float(self.controller_list[i].robot.robot_radius)
+            for j in range(i + 1, self.num_robot):
+                pj = np.asarray(self.controller_list[j].robot.get_position(), dtype=float).reshape(-1)
+                rj = float(self.controller_list[j].robot.robot_radius)
+                dist = float(np.linalg.norm(pi - pj))
+                if dist < (ri + rj):
+                    return i, j, dist, (ri + rj)
+        return None
+
     def move_robots(self):
         '''
         Move all robots and return a list indicating which robots have reached their goals
         '''
         robots_reached_goals = [False] * self.num_robot
         self.last_step_status = [0] * self.num_robot
+        agent_snapshot = self._build_agent_state_snapshot()
         for i, controller in enumerate(self.controller_list):
+            if hasattr(controller, 'set_other_agents'):
+                if agent_snapshot.shape[0] > 0:
+                    other_agents = np.delete(agent_snapshot, i, axis=0)
+                else:
+                    other_agents = np.empty((0, 5), dtype=float)
+                controller.set_other_agents(other_agents)
             pre_detected_unknown = np.array(
                 getattr(controller.robot, 'detected_unknown_obs_memory', np.empty((0, 7))),
                 dtype=float,
@@ -400,6 +454,21 @@ class ExplorationManager:
                 self._record_collision_info(i, controller, pre_detected_unknown)
             if controller.has_reached_goal():
                 robots_reached_goals[i] = True
+
+        inter_agent_collision = self._check_inter_agent_collision()
+        if inter_agent_collision is not None:
+            i, j, dist, threshold = inter_agent_collision
+            self.failed = True
+            self.last_collision_info = {
+                'type': 'inter_agent',
+                'pair': [int(i), int(j)],
+                'distance': float(dist),
+                'threshold': float(threshold),
+            }
+            print(
+                f"Inter-agent collision detected between robot {i} and {j}: "
+                f"distance={dist:.3f}, threshold={threshold:.3f}"
+            )
         return robots_reached_goals
 
     def _record_collision_info(self, robot_idx, controller, pre_detected_unknown):

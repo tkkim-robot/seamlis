@@ -25,52 +25,70 @@ To install `seamlis`, follow these steps:
 
 3. Run scripts with `uv run`:
    ```bash
-   uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 1 --no-unknown
+   uv run python examples/test_exploration.py --num_agent 1 --no-unknown
    ```
 
 ## Exploration Test Cases
 
-`examples/test_exploration.py` supports two environment modes:
+`examples/test_exploration.py` defaults to an indoor layout with A* waypoints and frontier exploration.
 
-- `--layout indoor --use_astar`: wall-heavy indoor exploration.
-- `--layout open --no-astar`: open-space exploration with denser obstacle fields.
+Default behavior:
+- `--layout indoor` and A* enabled (open layout defaults to no A*).
+- `--unknown` enabled.
+- `--algo frontier`.
+- `--attitude velocity_tracking_yaw`.
+- `--dt 0.1`, `--tf 300.0`, `--coverage_target 0.98`.
 
-Common arguments:
-
-- `--num_agent` (default: `2`, supported: `1..3`)
-- `--unknown` / `--no-unknown` (default: `--unknown`)
-- `--algo {frontier,coscan}` (default: `frontier`)
-- `--attitude` (default: `velocity_tracking_yaw`)
-- `--pos_controller {mpc_cbf,cbf_qp}` (default: `mpc_cbf`)
-- `--coverage_target` (default: `0.98`)
-- `--unknown_profile {default,stress}` (default: `default`)
-- `--seed` (default: `2`)
-- `--fov_angle`, `--cam_range` (optional sensor overrides)
-- `--persistent_unknown_fov` / `--no-persistent_unknown_fov`
-- `--dt` (default: `0.1`)
-- `--tf` (default: `300.0`)
-
-Validated example runs:
+Quick runs:
 
 ```bash
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 1 --no-unknown --no_render
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 2 --unknown --no_render
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 3 --unknown --no_render
-uv run python examples/test_exploration.py --layout open --no-astar --algo frontier --num_agent 1 --no-unknown --no_render
-uv run python examples/test_exploration.py --layout open --no-astar --algo frontier --num_agent 2 --unknown --no_render
-uv run python examples/test_exploration.py --layout open --no-astar --algo frontier --num_agent 3 --unknown --no_render
+# Easiest baseline (single robot, known-only map)
+uv run python examples/test_exploration.py --num_agent 1 --no-unknown
+
+# Default 2-agent indoor exploration
+uv run python examples/test_exploration.py --num_agent 2
+
+# Gatekeeper (default nominal=visibility_area, backup=velocity_tracking_yaw)
+uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper
 ```
 
-Unknown-obstacle collision stress examples for attitude-controller research:
+Useful arguments:
+- `--num_agent {1,2,3}`
+- `--algo {frontier,coscan}`
+- `--attitude {velocity_tracking_yaw,visibility_area,simple,gatekeeper,...}`
+- `--layout {indoor,open}`, `--use_astar`, `--no-astar`
+- `--unknown_profile {default,stress}`
+
+Gatekeeper tuning arguments:
+- `--gatekeeper_nominal {visibility_area,simple,velocity_tracking_yaw}`
+- `--gatekeeper_nominal_horizon` (default: `0.5`)
+- `--gatekeeper_event_offset` (default: `0.0`)
+- `--gatekeeper_backup_horizon` (default: `1.5`)
+- `--gatekeeper_horizon_discount` (default: `0.1`)
+- `--gatekeeper_validation_slack` (default: `0.12`)
+- `--gatekeeper_braking_margin` (default: `0.35`)
+
+Additional examples:
 
 ```bash
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 2 --unknown --unknown_profile stress --attitude simple --no-persistent_unknown_fov
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 2 --unknown --unknown_profile stress --attitude visibility_area --no-persistent_unknown_fov
+# Open layout (A* off by default)
+uv run python examples/test_exploration.py --layout open --num_agent 2
+
+# CoScan on indoor
+uv run python examples/test_exploration.py --algo coscan --num_agent 2
+
+# Gatekeeper with simple nominal
+uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper --gatekeeper_nominal simple
+
+# Failure case (non-gatekeeper): reduced sensing + stress map can collide with unknown obstacles
+uv run python examples/test_exploration.py --num_agent 2 --unknown_profile stress --attitude simple --fov_angle 45 --cam_range 3.5
 ```
 
-Same situation, safe behavior under velocity tracking yaw (set attitude to default)
-```bash
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo frontier --num_agent 2 --unknown --unknown_profile stress --no-persistent_unknown_fov
-uv run python examples/test_exploration.py --layout indoor --use_astar --algo coscan --num_agent 2 --unknown --unknown_profile stress --no-persistent_unknown_fov
-```
+Each run prints:
+- `Visibility violations per robot: [...] (total=...)`
+- For gatekeeper runs: per-robot replan/acceptance/nominal-usage statistics.
 
+Notes:
+- Unknown obstacles are always memorized per-agent after detection.
+- Inter-agent collision avoidance is always enabled in the local controller (treated as moving circular obstacles in CBF constraints).
+- Non-gatekeeper yaw policies can fail because they may prioritize map gain over forward visibility, causing late unknown-obstacle detection.

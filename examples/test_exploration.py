@@ -316,13 +316,13 @@ def parse_args():
     parser.add_argument(
         '--gatekeeper_nominal_horizon',
         type=float,
-        default=0.1,
+        default=0.5,
         help='Gatekeeper nominal horizon [s].',
     )
     parser.add_argument(
         '--gatekeeper_backup_horizon',
         type=float,
-        default=2.0,
+        default=1.5,
         help='Gatekeeper backup horizon [s].',
     )
     parser.add_argument(
@@ -365,37 +365,9 @@ def parse_args():
         help='Unknown-obstacle profile: default or stress (denser, harder).',
     )
     parser.add_argument('--map_resolution', type=float, default=0.16, help='Exploration map resolution [m/cell].')
-    parser.add_argument('--seed', type=int, default=2, help='Random seed for deterministic planning behavior.')
     parser.add_argument('--fov_angle', type=float, default=None, help='Override robot FoV angle in degrees.')
     parser.add_argument('--cam_range', type=float, default=None, help='Override robot camera range in meters.')
     parser.add_argument('--w_max', type=float, default=None, help='Override robot max yaw rate [rad/s].')
-    unknown_memory_group = parser.add_mutually_exclusive_group()
-    unknown_memory_group.add_argument(
-        '--remember_unknown_obs',
-        dest='remember_unknown_obs',
-        action='store_true',
-        help='Keep unknown obstacles in each robot map after first detection.',
-    )
-    unknown_memory_group.add_argument(
-        '--forget_unknown_obs',
-        dest='remember_unknown_obs',
-        action='store_false',
-        help='Track unknown obstacles only while they are currently visible.',
-    )
-    # Backward-compatible aliases (hidden in help text).
-    unknown_memory_group.add_argument(
-        '--persistent_unknown_fov',
-        dest='remember_unknown_obs',
-        action='store_true',
-        help=argparse.SUPPRESS,
-    )
-    unknown_memory_group.add_argument(
-        '--no-persistent_unknown_fov',
-        dest='remember_unknown_obs',
-        action='store_false',
-        help=argparse.SUPPRESS,
-    )
-    parser.set_defaults(remember_unknown_obs=True)
     parser.add_argument('--save_anim', action='store_true', help='Save animation as mp4 (rendering required).')
     parser.add_argument('--no_render', action='store_true', help='Disable live rendering (headless run).')
     parser.add_argument('--dt', type=float, default=0.1, help='Simulation step size.')
@@ -409,7 +381,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    np.random.seed(args.seed)
 
     if args.no_render:
         import matplotlib
@@ -446,7 +417,8 @@ def main():
             robot_spec['cam_range'] = float(args.cam_range)
         if args.w_max is not None:
             robot_spec['w_max'] = float(args.w_max)
-        robot_spec['unknown_obs_persistent_fov'] = bool(args.remember_unknown_obs)
+        # Keep unknown-obstacle memory persistent for each agent.
+        robot_spec['unknown_obs_persistent_fov'] = True
         if args.attitude == 'gatekeeper':
             robot_spec['w_max'] = float(robot_spec.get('w_max', 1.2))
             robot_spec['gatekeeper_nominal'] = args.gatekeeper_nominal
