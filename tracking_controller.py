@@ -75,19 +75,11 @@ class LocalTrackingController(_BaseLocalTrackingController):
         else:
             n_pos = 2
 
-        if self.state_machine == 'rotate':
-            current_angle = self.robot.get_orientation()
-            goal_angle = np.arctan2(self.waypoints[0][1] - self.robot.X[1, 0],
-                                    self.waypoints[0][0] - self.robot.X[0, 0])
-            if self.robot_spec['model'] in ['Quad2D', 'VTOL2D', 'Manipulator2D']:
-                self.state_machine = 'track'
-            if not self.enable_rotation:
-                self.state_machine = 'track'
-            if abs(current_angle - goal_angle) > self.rotation_threshold:
-                return self.waypoints[0][:n_pos]
-            else:
-                self.state_machine = 'track'
-                self.u_att = None
+        # Disable rotate/stop state-machine branches in seamlis.
+        # Yaw should always be produced by the active attitude controller.
+        if self.state_machine in ['rotate', 'stop']:
+            self.state_machine = 'track'
+            self.u_att = None
 
         if self.current_goal_index >= len(self.waypoints):
             return None
@@ -125,14 +117,10 @@ class LocalTrackingController(_BaseLocalTrackingController):
 
         self.goal = self.update_goal()
         if self.goal is not None:
-            if not self.robot.is_in_fov(self.goal):
-                if self.robot_spec['exploration']:
-                    self.state_machine = 'rotate'
-                else:
-                    self.state_machine = 'stop'
-                    self.goal = None
-            else:
-                self.state_machine = 'track'
+            self.state_machine = 'track'
+        else:
+            self.state_machine = 'idle'
+            self.u_att = None
 
         if self.show_animation:
             self.waypoints_scatter.set_offsets(self.waypoints[:, :2])
