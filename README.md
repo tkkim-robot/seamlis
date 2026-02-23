@@ -80,8 +80,11 @@ uv run python examples/test_exploration.py --algo coscan --num_agent 2
 # Gatekeeper with simple nominal
 uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper --gatekeeper_nominal simple
 
-# Failure case (non-gatekeeper): reduced sensing + stress map can collide with unknown obstacles
-uv run python examples/test_exploration.py --num_agent 2 --unknown_profile stress --attitude simple --fov_angle 45 --cam_range 3.5
+# Default non-gatekeeper stress case (FoV stays at 70 deg, often fails)
+uv run python examples/test_exploration.py --num_agent 2 --attitude simple
+
+# Same default map with gatekeeper (safe)
+uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper
 ```
 
 Each run prints:
@@ -91,4 +94,4 @@ Each run prints:
 Notes:
 - Unknown obstacles are always memorized per-agent after detection.
 - Inter-agent collision avoidance is always enabled in the local controller (treated as moving circular obstacles in CBF constraints).
-- Non-gatekeeper yaw policies can fail because they may prioritize map gain over forward visibility, causing late unknown-obstacle detection.
+- The default indoor unknown-obstacle layout is tuned so non-gatekeeper yaw policies can fail from late unknown-obstacle detection even with `fov=70`.
