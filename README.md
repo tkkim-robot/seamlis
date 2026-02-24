@@ -52,6 +52,15 @@ uv run python examples/test_exploration.py --num_agent 2
 uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper
 ```
 
+The sample results from the basic example with 3 agents:
+
+|      Exploration and Mapping with SEAMLis            |
+| :-------------------------------: |
+|  <img src="https://github.com/user-attachments/assets/49a25ecc-765a-40de-976f-039a67e4f440"  height="350px"> |
+
+The green points are the A* waypoint. The blue points are the assigned frontier goals. The gray and orange are known and unknown obstacles in circle or super-ellipsoid.
+The darker orange represents that the unknown obstacle has been detected by some agent (doesn't mean all agents detected it).
+
 Useful arguments:
 - `--num_agent {1,2,3}`
 - `--algo {frontier,coscan}`
