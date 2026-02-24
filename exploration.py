@@ -60,9 +60,15 @@ class ExplorationManager:
         self.failed = False
         self.last_step_status = [0] * self.num_robot
         self.last_collision_info = None
+        self.last_termination_reason = None
+        self.last_step_count = 0
+        self.last_sim_time = 0.0
+        self.last_success = False
         self.latest_obstacle_map = None
         self.use_astar_waypoints = bool(use_astar_waypoints)
         self.coverage_target = float(np.clip(coverage_target, 0.0, 1.0))
+        self._force_reassign_agents = set()
+        self._termination_marker_drawn = False
 
         self.known_obs = _normalize_obs_array(known_obs)
         self.unknown_obs = _normalize_obs_array(unknown_obs)
@@ -88,7 +94,8 @@ class ExplorationManager:
                 height=self.env_handler.height,
                 known_obs=self.known_obs,
             )
-            self.ax, self.fig = self.plot_handler.plot_grid("Local Tracking Controller")
+            # Keep animation output untitled for cleaner hero figures/videos.
+            self.ax, self.fig = self.plot_handler.plot_grid("")
         else:
             self.plot_handler = None
             self.fig, self.ax = plt.subplots()
@@ -120,6 +127,7 @@ class ExplorationManager:
         self.free_space_area = max(float(free_space_geom.area), 1e-6)
         self.last_coverage_ratio = 0.0
         self.robot_goals = [None] * self.num_robot
+        self._setup_deadlock_monitor()
 
         if exploration_algorithm == 'CoScan':
             self.exploration_algorithm = CoScanPlanner()
@@ -127,6 +135,208 @@ class ExplorationManager:
             self.exploration_algorithm = FrontierPlanner(fov_angle=self.controller_list[0].robot.fov_angle)
         else:
             raise ValueError(f"Exploration algorithm {exploration_algorithm} is not implemented")
+
+    def _setup_deadlock_monitor(self):
+        ref_spec = self.robot_specs[0] if len(self.robot_specs) > 0 else {}
+        self.deadlock_enabled = bool(ref_spec.get('enable_deadlock_recovery', True))
+        if not self.deadlock_enabled:
+            self.deadlock_window_steps = 0
+            self.deadlock_position_eps = 0.0
+            self.deadlock_speed_eps = 0.0
+            self.deadlock_goal_margin = 0.0
+            self.deadlock_cooldown_steps = 0
+            self._deadlock_hist = [[] for _ in range(self.num_robot)]
+            self._deadlock_cooldown = np.zeros(self.num_robot, dtype=np.int32)
+            self._deadlock_recovery_count = np.zeros(self.num_robot, dtype=np.int32)
+            self.deadlock_max_recoveries = 0
+            self.deadlock_exclusion_radius_cells = 0
+            self.deadlock_exclusion_ttl_steps = 0
+            self.deadlock_max_exclusions = 0
+            self._deadlock_exclusions = [[] for _ in range(self.num_robot)]
+            return
+
+        deadlock_window_s = float(ref_spec.get('deadlock_window_s', 3.0))
+        self.deadlock_window_steps = max(int(np.ceil(deadlock_window_s / max(self.dt, 1e-3))), 12)
+        self.deadlock_position_eps = float(ref_spec.get('deadlock_position_eps', 0.28))
+        self.deadlock_speed_eps = float(ref_spec.get('deadlock_speed_eps', 0.06))
+        self.deadlock_goal_margin = float(ref_spec.get('deadlock_goal_margin', 0.9))
+        deadlock_cooldown_s = float(ref_spec.get('deadlock_cooldown_s', 2.5))
+        self.deadlock_cooldown_steps = max(int(np.ceil(deadlock_cooldown_s / max(self.dt, 1e-3))), 8)
+        self._deadlock_hist = [[] for _ in range(self.num_robot)]
+        self._deadlock_cooldown = np.zeros(self.num_robot, dtype=np.int32)
+        self._deadlock_recovery_count = np.zeros(self.num_robot, dtype=np.int32)
+        self.deadlock_max_recoveries = int(ref_spec.get('deadlock_max_recoveries', 6))
+        exclusion_radius = float(
+            ref_spec.get(
+                'deadlock_exclusion_radius',
+                max(1.8, self.deadlock_goal_margin + 0.8),
+            )
+        )
+        self.deadlock_exclusion_radius_cells = max(
+            int(np.ceil(exclusion_radius / max(self.env_handler.resolution, 1e-3))),
+            4,
+        )
+        exclusion_ttl_s = float(
+            ref_spec.get(
+                'deadlock_exclusion_ttl_s',
+                max(9.0, deadlock_window_s + deadlock_cooldown_s + 2.0),
+            )
+        )
+        self.deadlock_exclusion_ttl_steps = max(
+            int(np.ceil(exclusion_ttl_s / max(self.dt, 1e-3))),
+            self.deadlock_cooldown_steps + 1,
+        )
+        self.deadlock_max_exclusions = int(ref_spec.get('deadlock_max_exclusions', 5))
+        self._deadlock_exclusions = [[] for _ in range(self.num_robot)]
+
+    def _reset_deadlock_history(self, idx):
+        if idx < 0 or idx >= self.num_robot:
+            return
+        self._deadlock_hist[idx] = []
+
+    def _tick_deadlock_exclusions(self, idx):
+        if idx < 0 or idx >= self.num_robot:
+            return
+        if not hasattr(self, '_deadlock_exclusions'):
+            return
+        entries = self._deadlock_exclusions[idx]
+        if len(entries) == 0:
+            return
+        updated = []
+        for entry in entries:
+            ttl = int(entry.get('ttl', 0)) - 1
+            if ttl <= 0:
+                continue
+            updated.append({'xy': np.array(entry['xy'], dtype=np.int32), 'ttl': ttl})
+        self._deadlock_exclusions[idx] = updated
+
+    def _register_deadlock_exclusion(self, idx, goal):
+        if idx < 0 or idx >= self.num_robot:
+            return
+        if goal is None:
+            return
+        if not hasattr(self, '_deadlock_exclusions'):
+            return
+
+        goal_arr = np.asarray(goal, dtype=float).reshape(-1)
+        if goal_arr.size < 2:
+            return
+        goal_grid = self.env_handler.f_to_grid(goal_arr[:2])
+        if np.asarray(goal_grid).size < 2:
+            return
+        goal_xy = np.array([int(goal_grid[0]), int(goal_grid[1])], dtype=np.int32)
+
+        entries = self._deadlock_exclusions[idx]
+        merge_radius = max(2.0, 0.5 * float(self.deadlock_exclusion_radius_cells))
+        for entry in entries:
+            entry_xy = np.array(entry['xy'], dtype=float).reshape(2)
+            if np.linalg.norm(entry_xy - goal_xy.astype(float)) <= merge_radius:
+                entry['xy'] = goal_xy
+                entry['ttl'] = int(self.deadlock_exclusion_ttl_steps)
+                return
+
+        entries.append({'xy': goal_xy, 'ttl': int(self.deadlock_exclusion_ttl_steps)})
+        max_entries = max(int(self.deadlock_max_exclusions), 1)
+        if len(entries) > max_entries:
+            self._deadlock_exclusions[idx] = entries[-max_entries:]
+
+    def _mark_agent_deadlock_if_needed(self, idx, step_status, has_reached_goal):
+        if not getattr(self, 'deadlock_enabled', True):
+            return False
+        if idx < 0 or idx >= self.num_robot:
+            return False
+
+        if self._deadlock_cooldown[idx] > 0:
+            self._deadlock_cooldown[idx] -= 1
+
+        controller = self.controller_list[idx]
+        pos = np.asarray(controller.robot.get_position(), dtype=float).reshape(-1)
+        hist = self._deadlock_hist[idx]
+        hist.append(pos[:2].copy())
+        if len(hist) > self.deadlock_window_steps:
+            del hist[0]
+
+        if has_reached_goal or step_status in [-1, -2]:
+            self._reset_deadlock_history(idx)
+            return False
+        if self._deadlock_cooldown[idx] > 0:
+            return False
+
+        goal = self.robot_goals[idx]
+        if goal is None:
+            return False
+        if len(hist) < self.deadlock_window_steps:
+            return False
+
+        goal_xy = np.asarray(goal, dtype=float).reshape(-1)[:2]
+        goal_dist = float(np.linalg.norm(pos[:2] - goal_xy))
+        reached_threshold = float(self.robot_specs[idx].get('reached_threshold', 0.3))
+        min_goal_dist = max(reached_threshold + self.deadlock_goal_margin, 1.6 * reached_threshold)
+        if goal_dist < min_goal_dist:
+            return False
+
+        hist_arr = np.asarray(hist, dtype=float)
+        displacement = float(np.linalg.norm(hist_arr[-1] - hist_arr[0]))
+        step_disp = np.linalg.norm(np.diff(hist_arr, axis=0), axis=1)
+        mean_speed = float(np.mean(step_disp) / max(self.dt, 1e-3)) if step_disp.size > 0 else 0.0
+
+        if displacement <= self.deadlock_position_eps and mean_speed <= self.deadlock_speed_eps:
+            self._register_deadlock_exclusion(idx, goal)
+            self._deadlock_cooldown[idx] = self.deadlock_cooldown_steps
+            self._deadlock_recovery_count[idx] += 1
+            self._reset_deadlock_history(idx)
+            print(
+                f"Deadlock recovery trigger: robot={idx}, goal_dist={goal_dist:.3f}, "
+                f"disp={displacement:.3f}, speed={mean_speed:.3f}. Reassigning goal."
+            )
+            return True
+        return False
+
+    def _draw_termination_marker(self, target_robot_ids=None):
+        if (not self.show_animation) or self._termination_marker_drawn:
+            return
+        self._termination_marker_drawn = True
+
+        if target_robot_ids is None:
+            target_robot_ids = list(range(self.num_robot))
+        if not isinstance(target_robot_ids, (list, tuple, np.ndarray)):
+            target_robot_ids = [int(target_robot_ids)]
+
+        valid_targets = []
+        for rid in target_robot_ids:
+            rid_int = int(rid)
+            if 0 <= rid_int < self.num_robot and rid_int not in valid_targets:
+                valid_targets.append(rid_int)
+        if len(valid_targets) == 0:
+            valid_targets = [0]
+
+        for controller in self.controller_list:
+            controller.robot.render_plot()
+
+        for rid in valid_targets:
+            pos = np.asarray(self.controller_list[rid].robot.get_position(), dtype=float).reshape(-1)
+            self.ax.text(
+                float(pos[0]) + 0.45,
+                float(pos[1]) + 0.45,
+                '!',
+                color='red',
+                weight='bold',
+                fontsize=24,
+                zorder=30,
+            )
+
+        try:
+            self.controller_list[0].draw_plot(pause=0.35, force_save=True)
+        except Exception:
+            pass
+
+    def _finalize_animation(self):
+        if self.save_animation and len(self.controller_list) > 0:
+            self.controller_list[0].export_video()
+
+    def _finalize_failure(self, target_robot_ids=None):
+        self._draw_termination_marker(target_robot_ids=target_robot_ids)
+        self._finalize_animation()
 
     @staticmethod
     def _collect_known_obs_from_env(env_handler):
@@ -296,26 +506,40 @@ class ExplorationManager:
         Main exploration loop with goal-based updates
         '''
         self.failed = False
+        self.last_collision_info = None
+        self.last_termination_reason = None
+        self.last_step_count = 0
+        self.last_sim_time = 0.0
+        self.last_success = False
+        self._termination_marker_drawn = False
+        self._force_reassign_agents = set()
+        self._setup_deadlock_monitor()
         self.frontiers = self.get_frontiers()  # initially get frontiers
         self.last_coverage_ratio = self.get_coverage_ratio()
         if self.last_coverage_ratio >= self.coverage_target:
-            if self.save_animation:
-                self.controller_list[0].export_video()
+            self._finalize_animation()
+            self.last_termination_reason = 'coverage_target_reached'
+            self.last_success = True
             print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
             return True
         if self.exploration_complete():
+            self.last_termination_reason = 'frontiers_exhausted_initial'
             print(f"Exploration frontiers exhausted, but coverage={self.last_coverage_ratio:.3f} < target={self.coverage_target:.3f}.")
+            self._finalize_failure()
             return False
 
         self.update_all_goals()  # Initial goal assignment for all robots
         if self.global_goals is None:
             self.last_coverage_ratio = self.get_coverage_ratio()
             if self.last_coverage_ratio >= self.coverage_target:
-                if self.save_animation:
-                    self.controller_list[0].export_video()
+                self._finalize_animation()
+                self.last_termination_reason = 'coverage_target_reached_no_goals'
+                self.last_success = True
                 print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
                 return True
+            self.last_termination_reason = 'no_initial_goals'
             print(f"Exploration has no new goals, but coverage={self.last_coverage_ratio:.3f} < target={self.coverage_target:.3f}.")
+            self._finalize_failure()
             return False
 
         if self.show_animation:
@@ -324,20 +548,35 @@ class ExplorationManager:
         step_count = 0
         while True:
             if max_steps is not None and step_count >= max_steps:
+                self.last_step_count = int(step_count)
+                self.last_sim_time = float(step_count * self.dt)
+                self.last_termination_reason = 'max_steps'
                 print(
                     f"Exploration stopped after reaching max_steps={max_steps}. "
                     f"Coverage={self.last_coverage_ratio:.3f}."
                 )
+                self._finalize_failure()
                 return False
 
             robots_reached_goals = self.move_robots()
             step_count += 1
+            self.last_step_count = int(step_count)
+            self.last_sim_time = float(step_count * self.dt)
 
             if self.failed:
+                self.last_termination_reason = 'collision_or_infeasible'
                 print(
                     "Exploration failed: collision or infeasible optimization. "
                     f"Coverage={self.last_coverage_ratio:.3f}."
                 )
+                marker_targets = None
+                if isinstance(self.last_collision_info, dict):
+                    if "robot_idx" in self.last_collision_info:
+                        marker_targets = [int(self.last_collision_info["robot_idx"])]
+                    elif self.last_collision_info.get("type") == "inter_agent":
+                        pair = self.last_collision_info.get("pair", [])
+                        marker_targets = [int(p) for p in pair]
+                self._finalize_failure(target_robot_ids=marker_targets)
                 return False
 
             refresh_map = any(robots_reached_goals) or (step_count % 15 == 0)
@@ -345,15 +584,18 @@ class ExplorationManager:
                 self.frontiers = self.get_frontiers()
                 self.last_coverage_ratio = self.get_coverage_ratio()
                 if self.last_coverage_ratio >= self.coverage_target:
-                    if self.save_animation:
-                        self.controller_list[0].export_video()
+                    self._finalize_animation()
+                    self.last_termination_reason = 'coverage_target_reached'
+                    self.last_success = True
                     print(f"Exploration complete! Coverage={self.last_coverage_ratio:.3f}")
                     return True
                 if self.exploration_complete():
+                    self.last_termination_reason = 'frontiers_exhausted'
                     print(
                         f"Exploration frontiers exhausted, but coverage={self.last_coverage_ratio:.3f} "
                         f"< target={self.coverage_target:.3f}."
                     )
+                    self._finalize_failure()
                     return False
 
             if any(robots_reached_goals):
@@ -436,6 +678,7 @@ class ExplorationManager:
         self.last_step_status = [0] * self.num_robot
         agent_snapshot = self._build_agent_state_snapshot()
         for i, controller in enumerate(self.controller_list):
+            self._tick_deadlock_exclusions(i)
             if hasattr(controller, 'set_other_agents'):
                 if agent_snapshot.shape[0] > 0:
                     other_agents = np.delete(agent_snapshot, i, axis=0)
@@ -452,8 +695,24 @@ class ExplorationManager:
             if step_status == -2:
                 self.failed = True
                 self._record_collision_info(i, controller, pre_detected_unknown)
-            if controller.has_reached_goal():
+            has_reached_goal = controller.has_reached_goal()
+            if has_reached_goal:
                 robots_reached_goals[i] = True
+                self._reset_deadlock_history(i)
+                if hasattr(self, '_deadlock_exclusions'):
+                    self._deadlock_exclusions[i] = []
+            elif self._mark_agent_deadlock_if_needed(i, step_status=step_status, has_reached_goal=has_reached_goal):
+                if self._deadlock_recovery_count[i] > self.deadlock_max_recoveries:
+                    # Do not terminate as collision/infeasible for deadlock;
+                    # keep trying recovery and let max_steps decide timeout.
+                    print(
+                        f"Deadlock saturation: robot={i}, recoveries={self._deadlock_recovery_count[i]}. "
+                        "Continuing with fresh reassignment."
+                    )
+                    self._deadlock_recovery_count[i] = 0
+                    self._deadlock_cooldown[i] = self.deadlock_cooldown_steps
+                robots_reached_goals[i] = True
+                self._force_reassign_agents.add(i)
 
         inter_agent_collision = self._check_inter_agent_collision()
         if inter_agent_collision is not None:
@@ -541,15 +800,107 @@ class ExplorationManager:
         if new_global_goals is not None:
             for i, reached in enumerate(robots_reached_goals):
                 if reached: #only update goals with goal-reached robots
-                    self.robot_goals[i] = new_global_goals[i]
+                    was_forced_reassign = i in self._force_reassign_agents
+                    goal_i = np.array(new_global_goals[i], dtype=float)
+                    if was_forced_reassign:
+                        recovery_goal = self._select_recovery_goal(i, avoid_goal=goal_i)
+                        if recovery_goal is not None:
+                            goal_i = recovery_goal
+                    self._force_reassign_agents.discard(i)
+                    self.robot_goals[i] = goal_i
                     if self.use_astar_waypoints:
-                        waypoints = self._build_waypoints_for_robot(i, new_global_goals[i])
+                        waypoints = self._build_waypoints_for_robot(i, goal_i)
                     else:
-                        waypoints = np.array([new_global_goals[i][:2]], dtype=float)
+                        waypoints = np.array([goal_i[:2]], dtype=float)
                     self.controller_list[i].set_waypoints(waypoints)
+                    self._reset_deadlock_history(i)
+                    if not was_forced_reassign:
+                        self._deadlock_recovery_count[i] = 0
             
             if self.show_animation:
                 self.global_goals_scatter.set_offsets(self.robot_goals)
+
+    def _select_recovery_goal(self, robot_idx, avoid_goal=None):
+        obstacle_map = self.latest_obstacle_map if self.latest_obstacle_map is not None else self.get_obstacle_map()
+        frontier_map = self.get_frontier_map()
+        frontier_idx = np.argwhere(frontier_map == 1)  # [y, x]
+        if frontier_idx.size == 0:
+            return None
+
+        frontier_xy = np.column_stack((frontier_idx[:, 1], frontier_idx[:, 0])).astype(np.int32)
+        agent_positions = self.get_robot_positions()
+        start_xy = agent_positions[robot_idx][:2].astype(int)
+        distances = np.linalg.norm(frontier_xy - start_xy.reshape(1, 2), axis=1)
+
+        avoid_grid = None
+        if avoid_goal is not None:
+            avoid_grid = self.env_handler.f_to_grid(np.asarray(avoid_goal, dtype=float).reshape(1, -1)[:, :2])[0][:2]
+        min_separation_cells = max(int(np.ceil(2.2 / max(self.env_handler.resolution, 1e-3))), 7)
+
+        deadlock_exclusions = []
+        if hasattr(self, '_deadlock_exclusions') and 0 <= robot_idx < len(self._deadlock_exclusions):
+            deadlock_exclusions = self._deadlock_exclusions[robot_idx]
+        exclusion_xy = (
+            np.array([np.array(entry['xy'], dtype=float).reshape(2) for entry in deadlock_exclusions], dtype=float)
+            if len(deadlock_exclusions) > 0
+            else np.empty((0, 2), dtype=float)
+        )
+        exclusion_radius = float(getattr(self, 'deadlock_exclusion_radius_cells', 0))
+
+        if avoid_grid is not None:
+            avoid_dist = np.linalg.norm(
+                frontier_xy.astype(float) - np.array(avoid_grid, dtype=float).reshape(1, 2), axis=1
+            )
+            if exclusion_xy.size > 0:
+                exclusion_dist = np.min(
+                    np.linalg.norm(
+                        frontier_xy[:, None, :].astype(float) - exclusion_xy[None, :, :],
+                        axis=2,
+                    ),
+                    axis=1,
+                )
+                # Prefer alternatives far from both planner goal and deadlocked goals.
+                score = 0.50 * avoid_dist + 0.25 * distances + 0.25 * exclusion_dist
+            else:
+                # Prefer far-away alternatives to escape local deadlock basins.
+                score = 0.75 * avoid_dist + 0.25 * distances
+            order = np.argsort(-score)
+        elif exclusion_xy.size > 0:
+            exclusion_dist = np.min(
+                np.linalg.norm(
+                    frontier_xy[:, None, :].astype(float) - exclusion_xy[None, :, :],
+                    axis=2,
+                ),
+                axis=1,
+            )
+            score = 0.65 * exclusion_dist + 0.35 * distances
+            order = np.argsort(-score)
+        else:
+            order = np.argsort(-distances)
+
+        for idx in order[:350]:
+            x = int(frontier_xy[idx, 0])
+            y = int(frontier_xy[idx, 1])
+            if obstacle_map[y, x] == 1:
+                continue
+            if exclusion_xy.size > 0 and exclusion_radius > 0.0:
+                d_exclusion = np.min(
+                    np.linalg.norm(
+                        exclusion_xy - np.array([x, y], dtype=float).reshape(1, 2),
+                        axis=1,
+                    )
+                )
+                if d_exclusion < exclusion_radius:
+                    continue
+            if avoid_grid is not None:
+                if np.linalg.norm(np.array([x, y], dtype=float) - np.array(avoid_grid, dtype=float)) < min_separation_cells:
+                    continue
+            if self.use_astar_waypoints:
+                path = self._astar_grid(obstacle_map, (int(start_xy[0]), int(start_xy[1])), (x, y))
+                if path is None or len(path) < 2:
+                    continue
+            return self.env_handler.grid_to_f(np.array([[x, y]], dtype=np.int32))[0]
+        return None
 
     def update_global_goals(self):
         np_obstacle_map = self.get_obstacle_map()

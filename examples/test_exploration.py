@@ -60,14 +60,14 @@ def build_indoor_exploration_env():
 
     known_circles = np.array(
         [
-            [3.2, 3.0, 0.36],
-            [3.0, 15.6, 0.36],
-            [9.4, 4.4, 0.30],
-            [10.8, 14.6, 0.38],
-            [12.6, 6.4, 0.36],
-            [18.4, 6.8, 0.38],
-            [20.6, 14.8, 0.36],
-            [21.0, 10.2, 0.36],
+            [1.9609824671993221, 3.571635852132964, 0.34050950984221157],
+            [1.676274334947608, 14.685978826913212, 0.34888886514506134],
+            [10.154313911104943, 6.197057802522608, 0.31567569237250975],
+            [11.172968489948397, 13.709415691971323, 0.44],
+            [12.840940316109451, 5.668353014220707, 0.28],
+            [17.84911288084617, 6.673288202225253, 0.35923213699101575],
+            [20.74134371070081, 14.657228646665182, 0.4132990115393822],
+            [19.49278534976608, 9.762322881834, 0.3082173123587094],
         ],
         dtype=np.float64,
     )
@@ -77,29 +77,28 @@ def build_indoor_exploration_env():
 
     unknown_obs = np.array(
         [
-            [2.6, 7.8, 0.22],
-            [2.8, 11.4, 0.22],
-            [5.4, 10.6, 0.22],
-            [5.6, 15.2, 0.22],
-            [8.8, 6.2, 0.22],
-            [4.9, 5.4, 0.30],
-            [9.2, 12.6, 0.32],
-            [10.6, 11.0, 0.28],
-            [10.0, 9.0, 0.28],
-            [8.6, 16.2, 0.22],
-            [11.8, 3.2, 0.28],
-            [11.0, 8.9, 0.28],
-            [12.4, 12.6, 0.22],
-            [12.6, 8.0, 0.34],
-            [14.2, 6.8, 0.22],
-            [14.8, 14.4, 0.22],
-            [17.4, 8.8, 0.22],
-            [18.2, 12.2, 0.22],
-            [17.2, 15.4, 0.22],
-            [19.4, 9.8, 0.24],
-            [20.2, 10.8, 0.28],
-            [21.8, 6.6, 0.28],
-            [22.0, 7.8, 0.22],
+            [11.362271107787219, 8.337044872202748, 0.3534059153097643],
+            [7.618, 8.824, 0.2809135884004253],
+            [14.614, 10.842, 0.2723120820423194],
+            [3.6076386528860906, 7.946496393342197, 0.3511538410747291],
+            [11.046, 11.226, 0.33635577409748685],
+            [6.3811796772763865, 5.40084144215512, 0.342438685717245],
+            [8.612, 12.648, 0.3288366773537649],
+            [11.362, 6.518, 0.31487221430580004],
+            [4.097645485203005, 5.961445020410135, 0.3013563252909263],
+            [5.006429344726173, 5.811399027777369, 0.32015699814621223], #causing deadlock
+            [10.460569204900429, 16.168491431352955, 0.26213281684933154],
+            [10.436, 12.462, 0.29772772592575547],
+            [11.975285417129745, 17.507220605630696, 0.23964754358894777],
+            [11.087933619108204, 1.3033333032753358, 0.3506232510240296],
+            [14.228, 6.214, 0.32986688289530625],
+            [5.974553486302494, 9.50883337247491, 0.33155439236552264],
+            [20.307339013256755, 10.710580277796133, 0.3048422148980015],
+            [7.182, 6.628, 0.27776001969831526],
+            [20.297004786237103, 8.235727438424906, 0.3112703435811964],
+            [3.106378022744236, 1.8346281020628696, 0.33431962687934746],
+            [4.548, 13.562, 0.30322071292590325],
+            [3.925470482939058, 16.01888543328257, 0.26344685434937043],
         ],
         dtype=np.float64,
     )
@@ -234,7 +233,7 @@ def get_robot_specs(num_agent, use_astar):
                 'sensor': 'rgbd',
                 'fov_angle': 70.0,
                 'cam_range': 4.5,
-                'num_constraints': 24,
+                'num_constraints': 20,
                 'reached_threshold': 1.8,
                 'min_goal_distance': 2.6,
                 'nominal_k_v': 2.2,
@@ -242,8 +241,15 @@ def get_robot_specs(num_agent, use_astar):
                 'unknown_obs_detection': 'fov',
                 'exploration': True,
                 'robot_id': robot_id,
-                'visibility_violation_mode': 'safety_area',
-                'mpc_horizon': 12,
+                'visibility_violation_mode': 'point_mass',
+                'visibility_violation_tolerance': 0.02,
+                'deadlock_window_s': 3.0,
+                'deadlock_position_eps': 0.28,
+                'deadlock_speed_eps': 0.06,
+                'deadlock_goal_margin': 0.9,
+                'deadlock_cooldown_s': 3.5,
+                'deadlock_max_recoveries': 12,
+                'mpc_horizon': 10,
                 'mpc_cbf_alpha1': 0.55,
                 'mpc_cbf_alpha2': 0.55,
             }
@@ -256,7 +262,7 @@ def get_robot_specs(num_agent, use_astar):
                 'sensor': 'rgbd',
                 'fov_angle': 70.0,
                 'cam_range': 4.5,
-                'num_constraints': 20,
+                'num_constraints': 16,
                 'reached_threshold': 1.6,
                 'min_goal_distance': 2.2,
                 'nominal_k_v': 2.4,
@@ -264,8 +270,15 @@ def get_robot_specs(num_agent, use_astar):
                 'unknown_obs_detection': 'fov',
                 'exploration': True,
                 'robot_id': robot_id,
-                'visibility_violation_mode': 'safety_area',
-                'mpc_horizon': 10,
+                'visibility_violation_mode': 'point_mass',
+                'visibility_violation_tolerance': 0.02,
+                'deadlock_window_s': 3.0,
+                'deadlock_position_eps': 0.28,
+                'deadlock_speed_eps': 0.06,
+                'deadlock_goal_margin': 0.9,
+                'deadlock_cooldown_s': 3.5,
+                'deadlock_max_recoveries': 12,
+                'mpc_horizon': 8,
                 'mpc_cbf_alpha1': 0.45,
                 'mpc_cbf_alpha2': 0.45,
             }
@@ -318,13 +331,13 @@ def parse_args():
     parser.add_argument(
         '--gatekeeper_nominal_horizon',
         type=float,
-        default=0.5,
+        default=0.4,
         help='Gatekeeper nominal horizon [s].',
     )
     parser.add_argument(
         '--gatekeeper_backup_horizon',
         type=float,
-        default=1.5,
+        default=1.8,
         help='Gatekeeper backup horizon [s].',
     )
     parser.add_argument(
@@ -336,19 +349,19 @@ def parse_args():
     parser.add_argument(
         '--gatekeeper_horizon_discount',
         type=float,
-        default=0.1,
+        default=0.05,
         help='Gatekeeper nominal-horizon discount step [s].',
     )
     parser.add_argument(
         '--gatekeeper_validation_slack',
         type=float,
-        default=0.12,
+        default=0.30,
         help='Extra slack [m] for braking-distance monitor.',
     )
     parser.add_argument(
         '--gatekeeper_braking_margin',
         type=float,
-        default=0.35,
+        default=0.90,
         help='Extra conservative braking margin [m].',
     )
     parser.add_argument(
@@ -370,6 +383,11 @@ def parse_args():
     parser.add_argument('--fov_angle', type=float, default=None, help='Override robot FoV angle in degrees.')
     parser.add_argument('--cam_range', type=float, default=None, help='Override robot camera range in meters.')
     parser.add_argument('--w_max', type=float, default=None, help='Override robot max yaw rate [rad/s].')
+    parser.add_argument(
+        '--hide_visibility_violations',
+        action='store_true',
+        help='Hide visibility-violation red markers in the animation (counting is unchanged).',
+    )
     parser.add_argument('--save_anim', action='store_true', help='Save animation as mp4 (rendering required).')
     parser.add_argument('--no_render', action='store_true', help='Disable live rendering (headless run).')
     parser.add_argument('--dt', type=float, default=0.1, help='Simulation step size.')
@@ -419,10 +437,13 @@ def main():
             robot_spec['cam_range'] = float(args.cam_range)
         if args.w_max is not None:
             robot_spec['w_max'] = float(args.w_max)
+        if args.hide_visibility_violations:
+            robot_spec['show_visibility_violations'] = False
         # Keep unknown-obstacle memory persistent for each agent.
         robot_spec['unknown_obs_persistent_fov'] = True
         if args.attitude == 'gatekeeper':
             robot_spec['w_max'] = float(robot_spec.get('w_max', 1.2))
+            robot_spec['visibility_violation_mode'] = 'point_mass'
             robot_spec['gatekeeper_nominal'] = args.gatekeeper_nominal
             robot_spec['gatekeeper_backup'] = args.gatekeeper_backup
             robot_spec['gatekeeper_nominal_horizon'] = float(args.gatekeeper_nominal_horizon)

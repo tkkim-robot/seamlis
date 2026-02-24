@@ -1,4 +1,11 @@
+import glob
+import os
+import re
+import shutil
+import subprocess
+
 import numpy as np
+from shapely.geometry import Point
 
 from safe_control.tracking import LocalTrackingController as _BaseLocalTrackingController
 
@@ -9,6 +16,11 @@ class LocalTrackingController(_BaseLocalTrackingController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.other_agents = np.empty((0, 5), dtype=float)
+        self._show_visibility_violations = bool(
+            self.robot_spec.get('show_visibility_violations', True)
+        )
+        if not self._show_visibility_violations and hasattr(self.robot, 'unsafe_points_handle'):
+            self.robot.unsafe_points_handle.set_visible(False)
 
         # Use local MPC-CBF extension that supports dynamic-obstacle CBF terms.
         if self.pos_controller_type == 'mpc_cbf':
@@ -257,3 +269,95 @@ class LocalTrackingController(_BaseLocalTrackingController):
 
             nearest_indices = nearest_indices[np.argsort(clearances[nearest_indices])]
         return all_obs[nearest_indices]
+
+    def control_step(self):
+        # Keep a snapshot of the known footprint before stepping so the
+        # point-mass visibility metric can detect boundary crossing this step.
+        pre_step_footprint = self.robot.sensing_footprints
+        ret = super().control_step()
+        self._apply_visibility_plot_toggle()
+
+        if ret == -2:
+            return ret
+        if 'sensor' not in self.robot_spec or self.robot_spec['sensor'] != 'rgbd':
+            return ret
+
+        violation_mode = str(
+            self.robot_spec.get('visibility_violation_mode', 'safety_area')
+        ).lower()
+        if violation_mode != 'point_mass':
+            return ret
+
+        if pre_step_footprint is None or pre_step_footprint.is_empty:
+            return ret
+
+        # Apply a small tolerance around the known boundary to avoid counting
+        # near-boundary numerical jitter as a visibility violation.
+        vis_tol = float(self.robot_spec.get('visibility_violation_tolerance', 0.02))
+        vis_tol = max(vis_tol, 0.0)
+        known_region = pre_step_footprint.buffer(vis_tol + 1e-9)
+        p = Point(float(self.robot.X[0, 0]), float(self.robot.X[1, 0]))
+        if not known_region.covers(p):
+            self.robot.unsafe_points.append((self.robot.X[0, 0], self.robot.X[1, 0]))
+            # Only convert normal return codes to violation; terminal statuses
+            # (-1: done, -2: collision/infeasible) are preserved.
+            if ret == 0:
+                self._apply_visibility_plot_toggle()
+                return 1
+        self._apply_visibility_plot_toggle()
+        return ret
+
+    def _apply_visibility_plot_toggle(self):
+        if self._show_visibility_violations:
+            return
+        # Keep internal violation counting intact, but hide visual markers.
+        if hasattr(self.robot, 'unsafe_points_handle'):
+            self.robot.unsafe_points_handle.set_visible(False)
+            try:
+                self.robot.unsafe_points_handle.set_offsets(np.empty((0, 2)))
+            except Exception:
+                pass
+
+    def _duplicate_last_frame_for_hold(self):
+        if not (self.show_animation and self.save_animation):
+            return
+        hold_seconds = float(self.robot_spec.get('end_frame_hold_seconds', 1.0))
+        if hold_seconds <= 0.0:
+            return
+        input_fps = float(self.robot_spec.get('animation_input_fps', 30.0))
+        hold_frames = int(np.round(max(0.0, hold_seconds) * max(input_fps, 1.0)))
+        if hold_frames <= 0:
+            return
+
+        frame_glob = os.path.join(self.current_directory_path, "output/animations/t_step_*.png")
+        frame_files = sorted(glob.glob(frame_glob))
+        if len(frame_files) == 0:
+            return
+
+        last_file = frame_files[-1]
+        match = re.search(r"t_step_(\d+)\.png$", os.path.basename(last_file))
+        if match is None:
+            return
+        last_idx = int(match.group(1))
+        for k in range(1, hold_frames + 1):
+            dst = os.path.join(
+                self.current_directory_path,
+                "output/animations",
+                f"t_step_{last_idx + k:04d}.png",
+            )
+            shutil.copyfile(last_file, dst)
+
+    def export_video(self):
+        if self.show_animation and self.save_animation:
+            self._duplicate_last_frame_for_hold()
+            subprocess.call([
+                'ffmpeg',
+                '-framerate', str(int(self.robot_spec.get('animation_input_fps', 30))),
+                '-i', self.current_directory_path + "/output/animations/t_step_%04d.png",
+                '-vf', 'scale=1920:982,fps=60',
+                '-pix_fmt', 'yuv420p',
+                self.current_directory_path + "/output/animations/tracking.mp4",
+            ])
+
+            for file_name in glob.glob(self.current_directory_path + "/output/animations/*.png"):
+                os.remove(file_name)
