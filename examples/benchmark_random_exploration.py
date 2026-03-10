@@ -1,14 +1,25 @@
 import argparse
 import concurrent.futures
 import csv
+import hashlib
 import json
 import math
 import os
+import random
 import shutil
 import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+for _key in [
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+]:
+    os.environ.setdefault(_key, "1")
 
 import numpy as np
 
@@ -27,21 +38,40 @@ from safe_control.utils import env
 from examples.test_exploration import build_indoor_exploration_env, build_initial_states, get_robot_specs
 
 
-ATTITUDES = ["simple", "visibility_area", "gatekeeper"]
+ATTITUDES = ["velocity_tracking_yaw", "simple", "visibility_area", "gatekeeper"]
 ALGOS = ["frontier", "coscan"]
 AGENT_COUNTS = [1, 2, 3]
+BENCHMARK_START_POSITIONS = np.array(
+    [
+        [2.0, 2.0],
+        [2.0, 16.0],
+        [22.0, 4.0],
+    ],
+    dtype=float,
+)
+BENCHMARK_CHALLENGING_YAWS = np.array(
+    [
+        -np.pi / 2.0,
+        -np.pi / 2.0,
+        0.0,
+    ],
+    dtype=float,
+)
 
 
 DEFAULT_GATEKEEPER_PARAMS = {
     "gatekeeper_nominal": "visibility_area",
     "gatekeeper_backup": "velocity_tracking_yaw",
-    # Strict-safety tuning for benchmarking.
-    "gatekeeper_nominal_horizon": 0.4,
-    "gatekeeper_backup_horizon": 1.8,
+    # Benchmark defaults: allow longer nominal commitments while keeping
+    # a moderate backup horizon so gatekeeper stays faster than pure VT
+    # without giving up the early blindside veto.
+    "gatekeeper_nominal_horizon": 1.0,
+    "gatekeeper_backup_horizon": 1.4,
     "gatekeeper_event_offset": 0.0,
     "gatekeeper_horizon_discount": 0.05,
-    "gatekeeper_validation_slack": 0.30,
-    "gatekeeper_braking_distance_margin": 0.90,
+    "gatekeeper_validation_slack": 0.20,
+    "gatekeeper_validation_tube_margin": 0.20,
+    "gatekeeper_braking_distance_margin": 1.10,
 }
 
 
@@ -51,6 +81,25 @@ class MapConfig:
     known_obs: np.ndarray
     unknown_obs: np.ndarray
     source_seed: int
+    initial_states: Optional[np.ndarray] = None
+
+
+def _angle_normalize(x: np.ndarray) -> np.ndarray:
+    return ((x + np.pi) % (2.0 * np.pi)) - np.pi
+
+
+def sample_benchmark_initial_states(
+    rng: np.random.Generator,
+    yaw_jitter_deg: float = 0.0,
+) -> np.ndarray:
+    states = np.hstack((BENCHMARK_START_POSITIONS.copy(), BENCHMARK_CHALLENGING_YAWS.reshape(-1, 1)))
+    yaw_jitter = rng.uniform(
+        -np.deg2rad(yaw_jitter_deg),
+        np.deg2rad(yaw_jitter_deg),
+        size=states.shape[0],
+    )
+    states[:, 2] = _angle_normalize(states[:, 2] + yaw_jitter)
+    return states
 
 
 def _superellipse_outside(x: float, y: float, radius: float, walls: np.ndarray, margin: float = 0.04) -> bool:
@@ -94,14 +143,15 @@ def _sample_circle(
     boundary_margin: float,
     mode: str,
     centers: Optional[np.ndarray] = None,
+    cluster_std: float = 0.85,
     max_tries: int = 1500,
 ) -> Optional[np.ndarray]:
     for _ in range(max_tries):
         r = float(rng.uniform(r_min, r_max))
         if mode == "cluster" and centers is not None and len(centers) > 0:
             center = centers[int(rng.integers(0, len(centers)))]
-            x = float(center[0] + rng.normal(0.0, 1.0))
-            y = float(center[1] + rng.normal(0.0, 1.0))
+            x = float(center[0] + rng.normal(0.0, cluster_std))
+            y = float(center[1] + rng.normal(0.0, cluster_std))
         else:
             x = float(rng.uniform(r + 0.4, width - r - 0.4))
             y = float(rng.uniform(r + 0.4, height - r - 0.4))
@@ -120,6 +170,35 @@ def _sample_circle(
     return None
 
 
+def _fixed_circle_valid(
+    x: float,
+    y: float,
+    radius: float,
+    walls: np.ndarray,
+    existing_circles: np.ndarray,
+    starts_xy: np.ndarray,
+    start_clearance: float,
+    clearance_margin: float,
+    wall_margin: float,
+    boundary_margin: float,
+    width: float,
+    height: float,
+) -> bool:
+    if x <= radius + boundary_margin or x >= width - radius - boundary_margin:
+        return False
+    if y <= radius + boundary_margin or y >= height - radius - boundary_margin:
+        return False
+    if not _superellipse_outside(x, y, radius, walls, margin=wall_margin):
+        return False
+    if not _circles_nonoverlap(x, y, radius, existing_circles, margin=clearance_margin):
+        return False
+    if starts_xy.size > 0:
+        d_start = np.linalg.norm(starts_xy - np.array([x, y], dtype=float).reshape(1, 2), axis=1)
+        if np.any(d_start <= (radius + start_clearance)):
+            return False
+    return True
+
+
 def generate_random_indoor_map(
     rng: np.random.Generator,
     map_index: int,
@@ -128,6 +207,22 @@ def generate_random_indoor_map(
     env_height: float,
     starts_xy: np.ndarray,
 ) -> MapConfig:
+    map_seed = int(rng.integers(0, 2**31 - 1))
+    seed_seq = np.random.SeedSequence(map_seed)
+    (
+        state_seq,
+        known_seq,
+        ab_anchor_seq,
+        background_seq,
+        source_seq,
+    ) = seed_seq.spawn(5)
+    state_rng = np.random.default_rng(state_seq)
+    known_rng = np.random.default_rng(known_seq)
+    ab_anchor_rng = np.random.default_rng(ab_anchor_seq)
+    background_rng = np.random.default_rng(background_seq)
+    source_rng = np.random.default_rng(source_seq)
+
+    initial_states = sample_benchmark_initial_states(state_rng)
     max_robot_radius = 0.18
     # Keep random maps dense, but reject obstacle placements that create
     # near-impossible single-robot passages.
@@ -156,9 +251,9 @@ def generate_random_indoor_map(
         accepted = None
         existing = np.array(known_circles, dtype=float) if len(known_circles) > 0 else np.empty((0, 3), dtype=float)
         for _ in range(400):
-            r = float(np.clip(base[2] + rng.normal(0.0, 0.05), 0.28, 0.44))
-            x = float(np.clip(base[0] + rng.normal(0.0, 0.35), r + 0.5, env_width - r - 0.5))
-            y = float(np.clip(base[1] + rng.normal(0.0, 0.35), r + 0.5, env_height - r - 0.5))
+            r = float(np.clip(base[2] + known_rng.normal(0.0, 0.05), 0.28, 0.44))
+            x = float(np.clip(base[0] + known_rng.normal(0.0, 0.35), r + 0.5, env_width - r - 0.5))
+            y = float(np.clip(base[1] + known_rng.normal(0.0, 0.35), r + 0.5, env_height - r - 0.5))
             if not _superellipse_outside(x, y, r, walls, margin=0.04):
                 continue
             if not _circles_nonoverlap(x, y, r, existing, margin=min_obstacle_boundary_gap):
@@ -193,8 +288,36 @@ def generate_random_indoor_map(
     known_circles_arr = np.hstack((known_circles_arr, np.zeros((known_circles_arr.shape[0], 4), dtype=float)))
     known_obs = np.vstack((known_circles_arr, walls))
 
-    # Unknown-obstacle sampling: clustered + uniform to induce side-visibility hazards.
-    cluster_centers = np.array(
+    # Unknown-obstacle sampling: denser corridor-adjacent clusters to stress
+    # side-looking attitudes while remaining solvable for forward-looking ones.
+    blindside_primary_ab = np.array(
+        [
+            [3.92, 2.06, 0.265],
+            [4.46, 2.28, 0.295],
+            [5.55, 2.05, 0.255],
+            [3.92, 15.94, 0.265],
+            [4.46, 15.72, 0.295],
+            [5.55, 14.95, 0.255],
+        ],
+        dtype=float,
+    )
+    blindside_anchors_ab = np.array(
+        [
+            [5.00, 2.60],
+            [5.00, 15.40],
+        ],
+        dtype=float,
+    )
+    blindside_anchors_ab += ab_anchor_rng.normal(0.0, 0.04, size=blindside_anchors_ab.shape)
+
+    cluster_centers_ab = np.array(
+        [
+            [5.60, 2.90],
+            [5.60, 15.10],
+        ],
+        dtype=float,
+    )
+    cluster_centers_bg = np.array(
         [
             [5.0, 5.5],
             [9.8, 11.6],
@@ -202,17 +325,77 @@ def generate_random_indoor_map(
             [20.2, 10.8],
             [8.5, 16.0],
             [10.6, 8.9],
+            [6.7, 10.3],
+            [14.6, 8.0],
+            [17.9, 12.9],
         ],
         dtype=float,
     )
-    cluster_centers += rng.normal(0.0, 0.20, size=cluster_centers.shape)
+    cluster_centers_ab += ab_anchor_rng.normal(0.0, 0.20, size=cluster_centers_ab.shape)
+    cluster_centers_bg += background_rng.normal(0.0, 0.20, size=cluster_centers_bg.shape)
+    cluster_centers = np.vstack((cluster_centers_ab, cluster_centers_bg))
 
     unknown_circles: List[np.ndarray] = []
     known_for_clearance = known_obs[:, :3].copy() if known_obs.size > 0 else np.empty((0, 3), dtype=float)
-    total_unknown = 9
-    clustered_unknown = 5
+    total_unknown = 14
+    clustered_unknown = 8
 
-    for idx in range(total_unknown):
+    for x, y, r in blindside_primary_ab:
+        existing_unknown = np.array(unknown_circles, dtype=float) if len(unknown_circles) > 0 else np.empty((0, 3), dtype=float)
+        combined_existing = existing_unknown
+        if known_for_clearance.size > 0:
+            combined_existing = (
+                np.vstack((known_for_clearance, existing_unknown))
+                if existing_unknown.size > 0
+                else known_for_clearance
+            )
+        if _fixed_circle_valid(
+            x=float(x),
+            y=float(y),
+            radius=float(r),
+            walls=walls,
+            existing_circles=combined_existing,
+            starts_xy=starts_xy,
+            start_clearance=0.95,
+            clearance_margin=0.18,
+            wall_margin=0.06,
+            boundary_margin=0.24,
+            width=env_width,
+            height=env_height,
+        ):
+            unknown_circles.append(np.array([x, y, r], dtype=float))
+
+    for anchor in blindside_anchors_ab:
+        existing_unknown = np.array(unknown_circles, dtype=float) if len(unknown_circles) > 0 else np.empty((0, 3), dtype=float)
+        combined_existing = existing_unknown
+        if known_for_clearance.size > 0:
+            combined_existing = (
+                np.vstack((known_for_clearance, existing_unknown))
+                if existing_unknown.size > 0
+                else known_for_clearance
+            )
+        sampled = _sample_circle(
+            rng=ab_anchor_rng,
+            width=env_width,
+            height=env_height,
+            walls=walls,
+            existing_circles=combined_existing,
+            starts_xy=starts_xy,
+            r_min=0.24,
+            r_max=0.28,
+            start_clearance=0.95,
+            clearance_margin=0.18,
+            wall_margin=0.06,
+            boundary_margin=0.24,
+            mode="cluster",
+            centers=anchor.reshape(1, 2),
+            cluster_std=0.10,
+            max_tries=800,
+        )
+        if sampled is not None:
+            unknown_circles.append(sampled)
+
+    for idx in range(max(total_unknown - len(unknown_circles), 0)):
         mode = "cluster" if idx < clustered_unknown else "uniform"
         existing_unknown = np.array(unknown_circles, dtype=float) if len(unknown_circles) > 0 else np.empty((0, 3), dtype=float)
         combined_existing = existing_unknown
@@ -223,20 +406,21 @@ def generate_random_indoor_map(
                 else known_for_clearance
             )
         sampled = _sample_circle(
-            rng=rng,
+            rng=background_rng,
             width=env_width,
             height=env_height,
             walls=walls,
             existing_circles=combined_existing,
             starts_xy=starts_xy,
-            r_min=0.22,
-            r_max=0.28,
-            start_clearance=1.2,
-            clearance_margin=min_obstacle_boundary_gap,
-            wall_margin=0.10,
-            boundary_margin=0.32,
+            r_min=0.24,
+            r_max=0.30,
+            start_clearance=0.95,
+            clearance_margin=0.20,
+            wall_margin=0.06,
+            boundary_margin=0.24,
             mode=mode,
             centers=cluster_centers if mode == "cluster" else None,
+            cluster_std=0.45,
             max_tries=2000,
         )
         if sampled is not None:
@@ -250,7 +434,8 @@ def generate_random_indoor_map(
         map_id=f"map_{map_index:03d}",
         known_obs=known_obs,
         unknown_obs=unknown_obs,
-        source_seed=int(rng.integers(0, 2**31 - 1)),
+        source_seed=int(source_rng.integers(0, 2**31 - 1)),
+        initial_states=initial_states,
     )
 
 
@@ -265,7 +450,17 @@ def run_exploration_case(
     use_astar: bool,
     gatekeeper_params: Dict[str, float],
 ) -> Dict[str, object]:
-    x0s = build_initial_states(num_agent)
+    # Make each benchmark case deterministic regardless of process scheduling.
+    seed_key = f"{map_cfg.map_id}|{num_agent}|{algo}|{attitude}"
+    seed_bytes = hashlib.sha256(seed_key.encode("utf-8")).digest()
+    case_seed = int.from_bytes(seed_bytes[:4], byteorder="little", signed=False)
+    np.random.seed(case_seed)
+    random.seed(case_seed)
+
+    if map_cfg.initial_states is not None:
+        x0s = [np.array(s, dtype=float).copy() for s in np.asarray(map_cfg.initial_states, dtype=float)[:num_agent]]
+    else:
+        x0s = build_initial_states(num_agent)
     robot_specs = get_robot_specs(num_agent, use_astar=use_astar)
     for spec in robot_specs:
         spec["unknown_obs_persistent_fov"] = True
@@ -471,6 +666,7 @@ def map_to_serializable(map_cfg: MapConfig) -> Dict[str, object]:
         "source_seed": int(map_cfg.source_seed),
         "known_obs": map_cfg.known_obs.tolist(),
         "unknown_obs": map_cfg.unknown_obs.tolist(),
+        "initial_states": None if map_cfg.initial_states is None else np.asarray(map_cfg.initial_states, dtype=float).tolist(),
     }
 
 
@@ -537,7 +733,7 @@ def main():
     parser.add_argument("--num_trials", type=int, default=10, help="Number of sampled map trials.")
     parser.add_argument("--max_candidates", type=int, default=150, help="Maximum sampled candidate maps.")
     parser.add_argument("--dt", type=float, default=0.1, help="Simulation dt.")
-    parser.add_argument("--tf", type=float, default=300.0, help="Simulation horizon [s].")
+    parser.add_argument("--tf", type=float, default=420.0, help="Simulation horizon [s].")
     parser.add_argument("--coverage_target", type=float, default=0.98, help="Coverage success threshold.")
     parser.add_argument(
         "--hero_max_gatekeeper_visibility",
@@ -623,14 +819,15 @@ def main():
 
         all_rows: List[Dict[str, object]] = []
 
-        gatekeeper_jobs = []
-        non_gatekeeper_jobs = []
+        safe_precheck_jobs = []
+        remaining_jobs = []
         for map_cfg in trial_maps:
             for num_agent in AGENT_COUNTS:
                 for algo in ALGOS:
-                    gatekeeper_jobs.append((map_cfg, num_agent, algo, "gatekeeper"))
-                    non_gatekeeper_jobs.append((map_cfg, num_agent, algo, "simple"))
-                    non_gatekeeper_jobs.append((map_cfg, num_agent, algo, "visibility_area"))
+                    safe_precheck_jobs.append((map_cfg, num_agent, algo, "gatekeeper"))
+                    safe_precheck_jobs.append((map_cfg, num_agent, algo, "velocity_tracking_yaw"))
+                    remaining_jobs.append((map_cfg, num_agent, algo, "simple"))
+                    remaining_jobs.append((map_cfg, num_agent, algo, "visibility_area"))
 
         def _run_job_list(jobs: List[Tuple[MapConfig, int, str, str]], offset: int, total: int) -> List[Dict[str, object]]:
             rows = []
@@ -712,44 +909,46 @@ def main():
                     )
             return rows
 
-        total_runs = len(gatekeeper_jobs) + len(non_gatekeeper_jobs)
+        total_runs = len(safe_precheck_jobs) + len(remaining_jobs)
         print(
             f"[attempt {attempt + 1}/{args.max_attempts}] seed={attempt_seed} "
-            f"running gatekeeper precheck ({len(gatekeeper_jobs)} sims) with workers={args.workers}..."
+            f"running safety precheck ({len(safe_precheck_jobs)} sims) with workers={args.workers}..."
         )
-        gk_rows = _run_job_list(gatekeeper_jobs, offset=0, total=total_runs)
-        all_rows.extend(gk_rows)
-        gk_bad = [r for r in gk_rows if bool(r["collision_or_infeasible"])]
-        gk_not_success = [r for r in gk_rows if not bool(r["success"])]
-        if len(gk_bad) > 0 or len(gk_not_success) > 0:
+        safe_rows = _run_job_list(safe_precheck_jobs, offset=0, total=total_runs)
+        all_rows.extend(safe_rows)
+        safe_bad = [r for r in safe_rows if bool(r["collision_or_infeasible"])]
+        safe_not_success = [r for r in safe_rows if not bool(r["success"])]
+        if len(safe_bad) > 0 or len(safe_not_success) > 0:
             print(
-                f"[attempt {attempt + 1}] gatekeeper precheck failed: "
-                f"{len(gk_bad)} collision/infeasible, {len(gk_not_success)} non-success runs. "
+                f"[attempt {attempt + 1}] safety precheck failed: "
+                f"{len(safe_bad)} collision/infeasible, {len(safe_not_success)} non-success runs. "
                 "Retrying with next seed batch."
             )
             continue
 
         print(
-            f"[attempt {attempt + 1}] gatekeeper precheck passed. "
-            f"Running non-gatekeeper jobs ({len(non_gatekeeper_jobs)} sims)..."
+            f"[attempt {attempt + 1}] safety precheck passed. "
+            f"Running remaining jobs ({len(remaining_jobs)} sims)..."
         )
-        other_rows = _run_job_list(non_gatekeeper_jobs, offset=len(gatekeeper_jobs), total=total_runs)
+        other_rows = _run_job_list(remaining_jobs, offset=len(safe_precheck_jobs), total=total_runs)
         all_rows.extend(other_rows)
 
         hero_map_id = find_hero_map_id(all_rows, max_gatekeeper_visibility=args.hero_max_gatekeeper_visibility)
 
         gk_vis_per_robot = []
-        for r in gk_rows:
+        for r in safe_rows:
+            if str(r["attitude"]) != "gatekeeper":
+                continue
             gk_vis_per_robot.append(float(r["visibility_total"]) / max(int(r["num_agent"]), 1))
         gk_vis_mean = float(np.mean(gk_vis_per_robot)) if len(gk_vis_per_robot) > 0 else 0.0
 
         print(
-            f"[attempt {attempt + 1}] gatekeeper bad runs={len(gk_bad)}, "
-            f"gatekeeper non-success runs={len(gk_not_success)}, "
+            f"[attempt {attempt + 1}] safety bad runs={len(safe_bad)}, "
+            f"safety non-success runs={len(safe_not_success)}, "
             f"gatekeeper mean vis/robot={gk_vis_mean:.3f}, hero_map={hero_map_id}"
         )
 
-        if len(gk_bad) == 0 and len(gk_not_success) == 0 and hero_map_id is not None:
+        if len(safe_bad) == 0 and len(safe_not_success) == 0 and hero_map_id is not None:
             final_rows = all_rows
             final_maps = trial_maps
             final_hero_map_id = hero_map_id

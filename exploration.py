@@ -16,6 +16,7 @@ from algorithms.frontier_vanilla import FrontierPlanner
 from safe_control.utils import plotting
 from safe_control.utils import env
 from safe_control.utils.geometry import custom_merge
+from safe_control.utils.headless_plot import NullAxes, NullFigure
 
 """
 Created on June 22nd, 2024
@@ -98,10 +99,8 @@ class ExplorationManager:
             self.ax, self.fig = self.plot_handler.plot_grid("")
         else:
             self.plot_handler = None
-            self.fig, self.ax = plt.subplots()
-            self.ax.set_xlim(0.0, self.env_handler.width)
-            self.ax.set_ylim(0.0, self.env_handler.height)
-            self.ax.set_aspect('equal', adjustable='box')
+            self.fig = NullFigure()
+            self.ax = NullAxes(self.fig)
 
         self.controller_list = []
         for i in range(self.num_robot):
@@ -116,8 +115,12 @@ class ExplorationManager:
         self.merged_global_map = Polygon() 
         self.frontiers = LineString()
 
-        self.frontiers_scatter = self.ax.scatter([],[],s=10,facecolors='orange',edgecolors='orange')
-        self.global_goals_scatter = self.ax.scatter([],[],s=10,facecolors='blue',edgecolors='blue')
+        if self.show_animation:
+            self.frontiers_scatter = self.ax.scatter([],[],s=10,facecolors='orange',edgecolors='orange')
+            self.global_goals_scatter = self.ax.scatter([],[],s=10,facecolors='blue',edgecolors='blue')
+        else:
+            self.frontiers_scatter = None
+            self.global_goals_scatter = None
 
         # Set up the environment
         self.set_env_obstacles(self.env_handler)
@@ -139,7 +142,9 @@ class ExplorationManager:
     def _setup_deadlock_monitor(self):
         ref_spec = self.robot_specs[0] if len(self.robot_specs) > 0 else {}
         self.deadlock_enabled = bool(ref_spec.get('enable_deadlock_recovery', True))
+        reached_threshold_ref = float(ref_spec.get('reached_threshold', 0.3))
         if not self.deadlock_enabled:
+            self.deadlock_debug = False
             self.deadlock_window_steps = 0
             self.deadlock_position_eps = 0.0
             self.deadlock_speed_eps = 0.0
@@ -153,9 +158,15 @@ class ExplorationManager:
             self.deadlock_exclusion_ttl_steps = 0
             self.deadlock_max_exclusions = 0
             self._deadlock_exclusions = [[] for _ in range(self.num_robot)]
+            self.assignment_churn_window = 0
+            self.assignment_churn_position_radius = 0.0
+            self.assignment_churn_goal_swap_distance = 0.0
+            self.assignment_churn_goal_cluster_tol = 0.0
+            self._goal_assignment_hist = [[] for _ in range(self.num_robot)]
             return
 
         deadlock_window_s = float(ref_spec.get('deadlock_window_s', 3.0))
+        self.deadlock_debug = bool(ref_spec.get('debug_deadlock_recovery', False))
         self.deadlock_window_steps = max(int(np.ceil(deadlock_window_s / max(self.dt, 1e-3))), 12)
         self.deadlock_position_eps = float(ref_spec.get('deadlock_position_eps', 0.28))
         self.deadlock_speed_eps = float(ref_spec.get('deadlock_speed_eps', 0.06))
@@ -176,6 +187,8 @@ class ExplorationManager:
             int(np.ceil(exclusion_radius / max(self.env_handler.resolution, 1e-3))),
             4,
         )
+        self.deadlock_exclusion_growth = float(ref_spec.get('deadlock_exclusion_growth', 0.6))
+        self.deadlock_exclusion_growth_cap = float(ref_spec.get('deadlock_exclusion_growth_cap', 3.0))
         exclusion_ttl_s = float(
             ref_spec.get(
                 'deadlock_exclusion_ttl_s',
@@ -188,11 +201,44 @@ class ExplorationManager:
         )
         self.deadlock_max_exclusions = int(ref_spec.get('deadlock_max_exclusions', 5))
         self._deadlock_exclusions = [[] for _ in range(self.num_robot)]
+        self.assignment_churn_window = max(int(ref_spec.get('assignment_churn_window', 5)), 4)
+        self.assignment_churn_position_radius = float(
+            ref_spec.get(
+                'assignment_churn_position_radius',
+                max(1.1, 0.9 * reached_threshold_ref),
+            )
+        )
+        self.assignment_churn_goal_swap_distance = float(
+            ref_spec.get(
+                'assignment_churn_goal_swap_distance',
+                max(2.5, 1.5 * reached_threshold_ref),
+            )
+        )
+        self.assignment_churn_goal_cluster_tol = float(
+            ref_spec.get(
+                'assignment_churn_goal_cluster_tol',
+                max(0.55, 0.45 * reached_threshold_ref),
+            )
+        )
+        self._goal_assignment_hist = [[] for _ in range(self.num_robot)]
 
     def _reset_deadlock_history(self, idx):
         if idx < 0 or idx >= self.num_robot:
             return
         self._deadlock_hist[idx] = []
+
+    def _reset_goal_assignment_history(self, idx):
+        if idx < 0 or idx >= self.num_robot:
+            return
+        self._goal_assignment_hist[idx] = []
+
+    @staticmethod
+    def _max_pairwise_distance(points):
+        pts = np.asarray(points, dtype=float)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            return 0.0
+        deltas = pts[:, None, :] - pts[None, :, :]
+        return float(np.max(np.linalg.norm(deltas, axis=2)))
 
     def _tick_deadlock_exclusions(self, idx):
         if idx < 0 or idx >= self.num_robot:
@@ -239,6 +285,121 @@ class ExplorationManager:
         max_entries = max(int(self.deadlock_max_exclusions), 1)
         if len(entries) > max_entries:
             self._deadlock_exclusions[idx] = entries[-max_entries:]
+
+    def _get_deadlock_exclusion_state(self, robot_idx):
+        if not hasattr(self, '_deadlock_exclusions'):
+            return np.empty((0, 2), dtype=float), 0.0
+        if robot_idx < 0 or robot_idx >= len(self._deadlock_exclusions):
+            return np.empty((0, 2), dtype=float), 0.0
+        deadlock_exclusions = self._deadlock_exclusions[robot_idx]
+        exclusion_xy = (
+            np.array([np.array(entry['xy'], dtype=float).reshape(2) for entry in deadlock_exclusions], dtype=float)
+            if len(deadlock_exclusions) > 0
+            else np.empty((0, 2), dtype=float)
+        )
+        exclusion_radius = self._effective_deadlock_exclusion_radius(robot_idx)
+        return exclusion_xy, exclusion_radius
+
+    def _effective_deadlock_exclusion_radius(self, robot_idx):
+        base_radius = float(getattr(self, 'deadlock_exclusion_radius_cells', 0))
+        if base_radius <= 0.0:
+            return 0.0
+        recovery_count = 0
+        if hasattr(self, '_deadlock_recovery_count') and 0 <= robot_idx < len(self._deadlock_recovery_count):
+            recovery_count = int(max(self._deadlock_recovery_count[robot_idx] - 1, 0))
+        growth = float(getattr(self, 'deadlock_exclusion_growth', 0.0))
+        growth_cap = float(getattr(self, 'deadlock_exclusion_growth_cap', 1.0))
+        scale = min(1.0 + growth * recovery_count, max(growth_cap, 1.0))
+        return base_radius * scale
+
+    def _is_grid_xy_excluded(self, robot_idx, xy):
+        exclusion_xy, exclusion_radius = self._get_deadlock_exclusion_state(robot_idx)
+        if exclusion_xy.size == 0 or exclusion_radius <= 0.0:
+            return False
+        xy_arr = np.array(xy, dtype=float).reshape(1, 2)
+        return bool(np.min(np.linalg.norm(exclusion_xy - xy_arr, axis=1)) < exclusion_radius)
+
+    def _record_goal_assignment(self, idx, goal, allow_trigger=True):
+        if not getattr(self, 'deadlock_enabled', True):
+            return False
+        if idx < 0 or idx >= self.num_robot:
+            return False
+        if goal is None:
+            return False
+
+        goal_arr = np.asarray(goal, dtype=float).reshape(-1)
+        if goal_arr.size < 2:
+            return False
+
+        controller = self.controller_list[idx]
+        pos = np.asarray(controller.robot.get_position(), dtype=float).reshape(-1)
+        hist = self._goal_assignment_hist[idx]
+        hist.append(
+            {
+                'pos': pos[:2].copy(),
+                'goal': goal_arr[:2].copy(),
+            }
+        )
+        max_keep = max(2 * self.assignment_churn_window, self.assignment_churn_window + 2)
+        if len(hist) > max_keep:
+            self._goal_assignment_hist[idx] = hist[-max_keep:]
+            hist = self._goal_assignment_hist[idx]
+
+        if (not allow_trigger) or self._deadlock_cooldown[idx] > 0:
+            return False
+        if len(hist) < self.assignment_churn_window:
+            return False
+
+        recent = hist[-self.assignment_churn_window:]
+        pos_arr = np.array([entry['pos'] for entry in recent], dtype=float)
+        if self._max_pairwise_distance(pos_arr) > self.assignment_churn_position_radius:
+            return False
+
+        goal_arr = np.array([entry['goal'] for entry in recent], dtype=float)
+        cluster_centers = []
+        cluster_ids = []
+        for goal_xy in goal_arr:
+            assigned = False
+            for cluster_idx, center in enumerate(cluster_centers):
+                if np.linalg.norm(goal_xy - center) <= self.assignment_churn_goal_cluster_tol:
+                    cluster_ids.append(cluster_idx)
+                    assigned = True
+                    break
+            if not assigned:
+                cluster_centers.append(goal_xy.copy())
+                cluster_ids.append(len(cluster_centers) - 1)
+
+        if len(cluster_centers) < 2:
+            return False
+
+        cluster_ids = np.array(cluster_ids, dtype=int)
+        cluster_counts = np.bincount(cluster_ids, minlength=len(cluster_centers))
+        cluster_switches = int(np.sum(cluster_ids[1:] != cluster_ids[:-1]))
+        cluster_centers_arr = np.array(cluster_centers, dtype=float)
+        cluster_separation = self._max_pairwise_distance(cluster_centers_arr)
+        required_switches = max(3, self.assignment_churn_window - 2)
+
+        if cluster_switches < required_switches:
+            return False
+        if cluster_separation < self.assignment_churn_goal_swap_distance:
+            return False
+        if np.max(cluster_counts) < 2:
+            return False
+
+        self._register_deadlock_exclusion(idx, np.mean(pos_arr, axis=0))
+        for center in cluster_centers_arr:
+            self._register_deadlock_exclusion(idx, center)
+
+        self._deadlock_cooldown[idx] = self.deadlock_cooldown_steps
+        self._deadlock_recovery_count[idx] += 1
+        self._reset_deadlock_history(idx)
+        self._reset_goal_assignment_history(idx)
+        if self.deadlock_debug:
+            print(
+                f"Assignment-churn recovery trigger: robot={idx}, pos_spread={self._max_pairwise_distance(pos_arr):.3f}, "
+                f"goal_sep={cluster_separation:.3f}, switches={cluster_switches}. Reassigning goal."
+            )
+        return True
 
     def _mark_agent_deadlock_if_needed(self, idx, step_status, has_reached_goal):
         if not getattr(self, 'deadlock_enabled', True):
@@ -619,6 +780,7 @@ class ExplorationManager:
             else:
                 waypoints = np.array([self.global_goals[i][:2]], dtype=float)
             controller.set_waypoints(waypoints)
+            self._record_goal_assignment(i, self.global_goals[i], allow_trigger=False)
         
         if self.show_animation:
             self.global_goals_scatter.set_offsets(self.global_goals)
@@ -699,16 +861,15 @@ class ExplorationManager:
             if has_reached_goal:
                 robots_reached_goals[i] = True
                 self._reset_deadlock_history(i)
-                if hasattr(self, '_deadlock_exclusions'):
-                    self._deadlock_exclusions[i] = []
             elif self._mark_agent_deadlock_if_needed(i, step_status=step_status, has_reached_goal=has_reached_goal):
                 if self._deadlock_recovery_count[i] > self.deadlock_max_recoveries:
                     # Do not terminate as collision/infeasible for deadlock;
                     # keep trying recovery and let max_steps decide timeout.
-                    print(
-                        f"Deadlock saturation: robot={i}, recoveries={self._deadlock_recovery_count[i]}. "
-                        "Continuing with fresh reassignment."
-                    )
+                    if self.deadlock_debug:
+                        print(
+                            f"Deadlock saturation: robot={i}, recoveries={self._deadlock_recovery_count[i]}. "
+                            "Continuing with fresh reassignment."
+                        )
                     self._deadlock_recovery_count[i] = 0
                     self._deadlock_cooldown[i] = self.deadlock_cooldown_steps
                 robots_reached_goals[i] = True
@@ -802,10 +963,15 @@ class ExplorationManager:
                 if reached: #only update goals with goal-reached robots
                     was_forced_reassign = i in self._force_reassign_agents
                     goal_i = np.array(new_global_goals[i], dtype=float)
-                    if was_forced_reassign:
+                    assignment_churn = False
+                    if not was_forced_reassign:
+                        assignment_churn = self._record_goal_assignment(i, goal_i)
+                    if was_forced_reassign or assignment_churn:
                         recovery_goal = self._select_recovery_goal(i, avoid_goal=goal_i)
                         if recovery_goal is not None:
                             goal_i = recovery_goal
+                        self._reset_goal_assignment_history(i)
+                        self._record_goal_assignment(i, goal_i, allow_trigger=False)
                     self._force_reassign_agents.discard(i)
                     self.robot_goals[i] = goal_i
                     if self.use_astar_waypoints:
@@ -814,7 +980,7 @@ class ExplorationManager:
                         waypoints = np.array([goal_i[:2]], dtype=float)
                     self.controller_list[i].set_waypoints(waypoints)
                     self._reset_deadlock_history(i)
-                    if not was_forced_reassign:
+                    if (not was_forced_reassign) and (not assignment_churn):
                         self._deadlock_recovery_count[i] = 0
             
             if self.show_animation:
@@ -837,15 +1003,7 @@ class ExplorationManager:
             avoid_grid = self.env_handler.f_to_grid(np.asarray(avoid_goal, dtype=float).reshape(1, -1)[:, :2])[0][:2]
         min_separation_cells = max(int(np.ceil(2.2 / max(self.env_handler.resolution, 1e-3))), 7)
 
-        deadlock_exclusions = []
-        if hasattr(self, '_deadlock_exclusions') and 0 <= robot_idx < len(self._deadlock_exclusions):
-            deadlock_exclusions = self._deadlock_exclusions[robot_idx]
-        exclusion_xy = (
-            np.array([np.array(entry['xy'], dtype=float).reshape(2) for entry in deadlock_exclusions], dtype=float)
-            if len(deadlock_exclusions) > 0
-            else np.empty((0, 2), dtype=float)
-        )
-        exclusion_radius = float(getattr(self, 'deadlock_exclusion_radius_cells', 0))
+        exclusion_xy, exclusion_radius = self._get_deadlock_exclusion_state(robot_idx)
 
         if avoid_grid is not None:
             avoid_dist = np.linalg.norm(
@@ -923,6 +1081,12 @@ class ExplorationManager:
             np_frontier_map,
             np_obstacle_map,
         )
+        global_goals = self._apply_deadlock_exclusion_filters(
+            global_goals,
+            agent_positions,
+            np_frontier_map,
+            np_obstacle_map,
+        )
         return self.env_handler.grid_to_f(global_goals)
 
     def _adjust_goals_for_progress(self, global_goals, agent_positions, frontier_map, obstacle_map):
@@ -955,12 +1119,32 @@ class ExplorationManager:
                 obstacle_map=obstacle_map,
                 min_dist_cells=reassignment_cells,
                 preferred_xy=(int(goal[0]), int(goal[1])),
+                robot_idx=i,
             )
             if replacement is not None:
                 adjusted_goals[i] = replacement
         return adjusted_goals
 
-    def _select_distant_reachable_frontier(self, start_xy, frontier_map, obstacle_map, min_dist_cells, preferred_xy=None):
+    def _apply_deadlock_exclusion_filters(self, global_goals, agent_positions, frontier_map, obstacle_map):
+        adjusted_goals = np.array(global_goals, dtype=np.int32, copy=True)
+        for i in range(self.num_robot):
+            goal = adjusted_goals[i]
+            if not self._is_grid_xy_excluded(i, goal):
+                continue
+            cur = agent_positions[i][:2].astype(int)
+            replacement = self._select_distant_reachable_frontier(
+                start_xy=(int(cur[0]), int(cur[1])),
+                frontier_map=frontier_map,
+                obstacle_map=obstacle_map,
+                min_dist_cells=1,
+                preferred_xy=(int(goal[0]), int(goal[1])),
+                robot_idx=i,
+            )
+            if replacement is not None:
+                adjusted_goals[i] = replacement
+        return adjusted_goals
+
+    def _select_distant_reachable_frontier(self, start_xy, frontier_map, obstacle_map, min_dist_cells, preferred_xy=None, robot_idx=None):
         frontier_idx = np.argwhere(frontier_map == 1)  # [y, x]
         if frontier_idx.size == 0:
             return None
@@ -992,6 +1176,8 @@ class ExplorationManager:
         for idx in order[:max_checks]:
             x, y = int(candidates[idx, 0]), int(candidates[idx, 1])
             if obstacle_map[y, x] == 1:
+                continue
+            if robot_idx is not None and self._is_grid_xy_excluded(robot_idx, (x, y)):
                 continue
             if self.use_astar_waypoints:
                 path = self._astar_grid(obstacle_map, start_xy, (x, y))
