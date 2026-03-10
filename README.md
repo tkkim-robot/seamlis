@@ -113,12 +113,13 @@ Each run prints:
 Use a single benchmark entrypoint:
 
 ```bash
-uv run python examples/benchmark_random_exploration.py \
+uv run python examples/run_benchmark.py \
   --seed 42 \
-  --num_trials 10 \
   --dt 0.1 \
-  --tf 300 \
-  --coverage_target 0.99\
-  --workers 8 \
+  --tf 800 \
+  --coverage_target 0.98 \
+  --workers 4 \
   --output_dir output/benchmark_seed42
 ```
+
+`examples/benchmark_utils.py` is only the shared helper module behind the benchmark entrypoint. It is not intended to be run directly.

@@ -1,3 +1,5 @@
+"""Shared benchmark helpers used by the public run_benchmark.py entrypoint."""
+
 import argparse
 import concurrent.futures
 import csv

@@ -13,18 +13,23 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from examples.benchmark_random_exploration import (  # noqa: E402
+from examples.benchmark_utils import (  # noqa: E402
     ATTITUDES,
     DEFAULT_GATEKEEPER_PARAMS,
     MapConfig,
     append_csv,
+    generate_random_indoor_map,
     map_to_serializable,
     render_summary_markdown,
     run_exploration_case,
     summarize_results,
 )
-from examples.run_curated_final_benchmark import build_map  # noqa: E402
-from examples.test_exploration import build_initial_states, build_open_exploration_env, build_stress_unknown_obs  # noqa: E402
+from examples.test_exploration import (  # noqa: E402
+    build_indoor_exploration_env,
+    build_initial_states,
+    build_open_exploration_env,
+    build_stress_unknown_obs,
+)
 
 
 ROWWISE_RECIPES: Dict[Tuple[str, int], List[str]] = {
@@ -35,6 +40,22 @@ ROWWISE_RECIPES: Dict[Tuple[str, int], List[str]] = {
     ("frontier", 2): ["open_stress"] * 10,
     ("frontier", 3): ["open_stress"] * 10,
 }
+
+FIXED_UNKNOWN = np.array(
+    [
+        [3.92, 2.06, 0.265],
+        [3.92, 15.94, 0.265],
+        [5.55, 14.95, 0.255],
+        [6.87, 10.24, 0.244],
+        [8.32, 16.57, 0.243],
+        [17.87, 12.28, 0.275],
+        [14.93, 8.13, 0.248],
+        [21.24, 16.08, 0.290],
+    ],
+    dtype=float,
+)
+
+VARIANT_B_EXTRA = np.array([[4.90, 15.40, 0.26]], dtype=float)
 
 
 def parse_row_filter(spec: str) -> Dict[Tuple[str, int], bool]:
@@ -54,6 +75,33 @@ def parse_row_filter(spec: str) -> Dict[Tuple[str, int], bool]:
             raise ValueError(f"Unknown row token '{token}'. Available rows: {sorted(ROWWISE_RECIPES)}")
         rows[key] = True
     return rows
+
+
+def build_map(seed: int, layout_index: int, variant: str, map_id: str) -> MapConfig:
+    env_width, env_height, base_known_obs, _ = build_indoor_exploration_env()
+    starts = np.array([s[:2] for s in build_initial_states(3)], dtype=float)
+    rng = np.random.default_rng(seed)
+    map_cfg = None
+    for idx in range(layout_index + 1):
+        map_cfg = generate_random_indoor_map(
+            rng=rng,
+            map_index=idx,
+            base_known_obs=base_known_obs,
+            env_width=env_width,
+            env_height=env_height,
+            starts_xy=starts,
+        )
+    if map_cfg is None:
+        raise RuntimeError(f"Failed to generate layout index {layout_index}")
+    if variant == "base":
+        unknown_obs = FIXED_UNKNOWN.copy()
+    elif variant == "variant_b":
+        unknown_obs = np.vstack((FIXED_UNKNOWN, VARIANT_B_EXTRA))
+    else:
+        raise ValueError(f"Unsupported variant: {variant}")
+    map_cfg.map_id = map_id
+    map_cfg.unknown_obs = unknown_obs
+    return map_cfg
 
 
 def build_family_map(seed: int, family_name: str, map_id: str) -> MapConfig:
@@ -121,7 +169,7 @@ def build_jobs(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the row-wise curated benchmark with per-row family mixes.")
+    parser = argparse.ArgumentParser(description="Run the reproducible curated exploration benchmark.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dt", type=float, default=0.1)
     parser.add_argument("--tf", type=float, default=800.0)
@@ -130,7 +178,7 @@ def main() -> None:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="output/benchmark_seed42_rowwise_curated",
+        default="output/benchmark_seed42",
     )
     parser.add_argument(
         "--rows",
