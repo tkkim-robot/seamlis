@@ -16,7 +16,29 @@ from algorithms.frontier_vanilla import FrontierPlanner
 from safe_control.utils import plotting
 from safe_control.utils import env
 from safe_control.utils.geometry import custom_merge
-from safe_control.utils.headless_plot import NullAxes, NullFigure
+
+try:
+    from safe_control.utils.headless_plot import NullAxes, NullFigure
+except ModuleNotFoundError:
+    class NullFigure:
+        """Minimal Matplotlib-compatible figure wrapper for headless runs."""
+
+        def __init__(self):
+            self._figure = plt.figure(figsize=(1.0, 1.0))
+
+        def __getattr__(self, name):
+            return getattr(self._figure, name)
+
+    class NullAxes:
+        """Minimal axes wrapper backed by a real Matplotlib axes."""
+
+        def __init__(self, figure):
+            mpl_figure = getattr(figure, "_figure", figure)
+            self._axes = mpl_figure.add_subplot(111)
+            self._axes.set_axis_off()
+
+        def __getattr__(self, name):
+            return getattr(self._axes, name)
 
 """
 Created on June 22nd, 2024
