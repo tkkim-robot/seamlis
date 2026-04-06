@@ -67,13 +67,13 @@ DEFAULT_GATEKEEPER_PARAMS = {
     # Benchmark defaults: allow longer nominal commitments while keeping
     # a moderate backup horizon so gatekeeper stays faster than pure VT
     # without giving up the early blindside veto.
-    "gatekeeper_nominal_horizon": 1.0,
-    "gatekeeper_backup_horizon": 1.4,
+    "gatekeeper_nominal_horizon": 1.3,
+    "gatekeeper_backup_horizon": 1.2,
     "gatekeeper_event_offset": 0.0,
     "gatekeeper_horizon_discount": 0.05,
-    "gatekeeper_validation_slack": 0.20,
+    "gatekeeper_validation_slack": 0.15,
     "gatekeeper_validation_tube_margin": 0.20,
-    "gatekeeper_braking_distance_margin": 1.10,
+    "gatekeeper_braking_distance_margin": 1.00,
 }
 
 
@@ -453,7 +453,13 @@ def run_exploration_case(
     gatekeeper_params: Dict[str, float],
 ) -> Dict[str, object]:
     # Make each benchmark case deterministic regardless of process scheduling.
-    seed_key = f"{map_cfg.map_id}|{num_agent}|{algo}|{attitude}"
+    geom_hash = hashlib.sha256()
+    geom_hash.update(np.ascontiguousarray(map_cfg.known_obs, dtype=np.float64).tobytes())
+    geom_hash.update(np.ascontiguousarray(map_cfg.unknown_obs, dtype=np.float64).tobytes())
+    if map_cfg.initial_states is not None:
+        geom_hash.update(np.ascontiguousarray(map_cfg.initial_states, dtype=np.float64).tobytes())
+    geom_digest = geom_hash.hexdigest()
+    seed_key = f"{map_cfg.source_seed}|{geom_digest}|{num_agent}|{algo}|{attitude}"
     seed_bytes = hashlib.sha256(seed_key.encode("utf-8")).digest()
     case_seed = int.from_bytes(seed_bytes[:4], byteorder="little", signed=False)
     np.random.seed(case_seed)
@@ -571,7 +577,11 @@ def append_csv(path: str, row: Dict[str, object], header: List[str]) -> None:
         writer.writerow(row)
 
 
-def summarize_results(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+def summarize_results(
+    rows: List[Dict[str, object]],
+    paper_timeout_by_agents: Optional[Dict[int, float]] = None,
+    explore_timeout_by_agents: Optional[Dict[int, float]] = None,
+) -> List[Dict[str, object]]:
     def _to_bool(v: object) -> bool:
         if isinstance(v, bool):
             return v
@@ -590,16 +600,38 @@ def summarize_results(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
         algo, num_agent, attitude = key
         g = grouped[key]
         n = len(g)
-        success_mask = np.array([_to_bool(r.get("success")) for r in g], dtype=bool)
+        raw_success_mask = np.array([_to_bool(r.get("success")) for r in g], dtype=bool)
         collision_mask = np.array([_to_bool(r.get("collision_or_infeasible")) for r in g], dtype=bool)
         unknown_collision_mask = np.array([_to_bool(r.get("unknown_collision")) for r in g], dtype=bool)
         vis_totals = np.array([int(r["visibility_total"]) for r in g], dtype=float)
         sim_times = np.array([float(r["sim_time"]) for r in g], dtype=float)
-        success_times = np.array(
+        paper_timeout = None
+        if paper_timeout_by_agents is not None:
+            paper_timeout = paper_timeout_by_agents.get(int(num_agent))
+        explore_timeout = None
+        if explore_timeout_by_agents is not None:
+            explore_timeout = explore_timeout_by_agents.get(int(num_agent))
+        if paper_timeout is None:
+            success_mask = raw_success_mask
+        else:
+            success_mask = np.logical_and(raw_success_mask, sim_times <= float(paper_timeout))
+        success_times_no_timeout = np.array(
             [
                 float(r["exploration_time_success"])
                 for r in g
                 if r.get("exploration_time_success") not in [None, ""]
+            ],
+            dtype=float,
+        )
+        success_times_with_timeout = np.array(
+            [
+                float(r["exploration_time_success"])
+                for r in g
+                if r.get("exploration_time_success") not in [None, ""]
+                and (
+                    explore_timeout is None
+                    or float(r["exploration_time_success"]) <= float(explore_timeout)
+                )
             ],
             dtype=float,
         )
@@ -616,7 +648,12 @@ def summarize_results(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
                 "mean_visibility_total": float(np.mean(vis_totals)) if n > 0 else 0.0,
                 "mean_visibility_per_robot": float(np.mean(vis_totals / max(num_agent, 1))) if n > 0 else 0.0,
                 "mean_sim_time_all": float(np.mean(sim_times)) if n > 0 else 0.0,
-                "mean_exploration_time_success_only": float(np.mean(success_times)) if success_times.size > 0 else None,
+                "mean_exploration_time_success_only_no_timeout": (
+                    float(np.mean(success_times_no_timeout)) if success_times_no_timeout.size > 0 else None
+                ),
+                "mean_exploration_time_success_only_with_timeout": (
+                    float(np.mean(success_times_with_timeout)) if success_times_with_timeout.size > 0 else None
+                ),
             }
         )
     return summary_rows
@@ -627,23 +664,31 @@ def render_summary_markdown(
     output_path: str,
     hero_map_id: str,
     gatekeeper_params: Dict[str, float],
+    metadata_lines: Optional[List[str]] = None,
 ) -> None:
     lines = []
     lines.append("# Exploration Benchmark Summary")
     lines.append("")
     lines.append(f"- Hero map id: `{hero_map_id}`")
     lines.append(f"- Gatekeeper params: `{json.dumps(gatekeeper_params, sort_keys=True)}`")
+    if metadata_lines:
+        lines.extend(metadata_lines)
     lines.append("")
-    lines.append("| Algo | Agents | Attitude | Trials | Success Rate | Collision/Infeasible Rate | Unknown Collision Rate | Mean Vis. Viol. (Total) | Mean Vis. Viol. / Robot | Mean Sim Time (All) | Mean Explore Time (Success Only) |")
-    lines.append("| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Algo | Agents | Attitude | Trials | Success Rate | Collision/Infeasible Rate | Unknown Collision Rate | Mean Vis. Viol. (Total) | Mean Vis. Viol. / Robot | Mean Sim Time (All) | Mean Explore Time (Success Only, No Timeout) | Mean Explore Time (Success Only, With Timeout) |")
+    lines.append("| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in summary_rows:
-        success_only = (
-            f"{r['mean_exploration_time_success_only']:.2f}"
-            if r["mean_exploration_time_success_only"] is not None
+        success_only_no_timeout = (
+            f"{r['mean_exploration_time_success_only_no_timeout']:.2f}"
+            if r["mean_exploration_time_success_only_no_timeout"] is not None
+            else "N/A"
+        )
+        success_only_with_timeout = (
+            f"{r['mean_exploration_time_success_only_with_timeout']:.2f}"
+            if r["mean_exploration_time_success_only_with_timeout"] is not None
             else "N/A"
         )
         lines.append(
-            "| {algo} | {num_agent} | {attitude} | {trials} | {sr:.2f} | {cr:.2f} | {ucr:.2f} | {mv:.2f} | {mvr:.2f} | {mt:.2f} | {mst} |".format(
+            "| {algo} | {num_agent} | {attitude} | {trials} | {sr:.2f} | {cr:.2f} | {ucr:.2f} | {mv:.2f} | {mvr:.2f} | {mt:.2f} | {mst0} | {mst1} |".format(
                 algo=r["algo"],
                 num_agent=r["num_agent"],
                 attitude=r["attitude"],
@@ -654,7 +699,8 @@ def render_summary_markdown(
                 mv=r["mean_visibility_total"],
                 mvr=r["mean_visibility_per_robot"],
                 mt=r["mean_sim_time_all"],
-                mst=success_only,
+                mst0=success_only_no_timeout,
+                mst1=success_only_with_timeout,
             )
         )
 

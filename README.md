@@ -25,7 +25,7 @@ To install `seamlis`, follow these steps:
 
 3. Run scripts with `uv run`:
    ```bash
-   uv run python examples/test_exploration.py --num_agent 1 
+   uv run python examples/test_exploration.py --num_agent 2
    ```
 
 ## Exploration Test Cases
@@ -33,8 +33,9 @@ To install `seamlis`, follow these steps:
 `examples/test_exploration.py` defaults to an indoor layout with A* waypoints and frontier exploration.
 
 Default behavior:
-- `--layout indoor` and A* enabled (open layout defaults to no A*).
+- `--layout indoor`, `--scenario curated`, and A* enabled (open layout defaults to no A*).
 - `--unknown` enabled.
+- `--unknown_profile default`.
 - `--algo frontier`.
 - `--attitude velocity_tracking_yaw`.
 - `--dt 0.1`, `--tf 300.0`, `--coverage_target 0.98`.
@@ -42,14 +43,15 @@ Default behavior:
 Quick runs:
 
 ```bash
-# Easiest baseline (single robot, known-only map)
-uv run python examples/test_exploration.py --num_agent 1 --no-unknown
-
 # Default 2-agent indoor exploration
 uv run python examples/test_exploration.py --num_agent 2
 
 # Gatekeeper (default nominal=visibility_area, backup=velocity_tracking_yaw)
 uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper
+
+# Same default demo case with the unsafe baselines
+uv run python examples/test_exploration.py --num_agent 2 --attitude simple
+uv run python examples/test_exploration.py --num_agent 2 --attitude visibility_area
 ```
 
 The sample results from the basic example with 3 agents:
@@ -85,23 +87,8 @@ Additional examples:
 # Open layout (A* off by default)
 uv run python examples/test_exploration.py --layout open --num_agent 2
 
-# Save animation
-uv run python examples/test_exploration.py --save
-
-# CoScan on indoor
-uv run python examples/test_exploration.py --algo coscan --num_agent 2
-
-# Gatekeeper with simple nominal
-uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper --gatekeeper_nominal simple
-
-# Representative non-gatekeeper failure case (simple; unknown collision)
-uv run python examples/test_exploration.py --num_agent 2 --algo coscan --attitude simple 
-
-# Representative non-gatekeeper failure case (visibility-area; unknown collision)
-uv run python examples/test_exploration.py --num_agent 2 --algo coscan --attitude visibility_area
-
-# Same default map with gatekeeper (safe; no unknown collision)
-uv run python examples/test_exploration.py --num_agent 2 --algo coscan --attitude gatekeeper
+# Standard indoor map
+uv run python examples/test_exploration.py --num_agent 2 --scenario standard
 ```
 
 Each run prints:
@@ -110,16 +97,10 @@ Each run prints:
 
 ## Benchmark
 
-Use a single benchmark entrypoint:
+Use the public benchmark entrypoint:
 
 ```bash
-uv run python examples/run_benchmark.py \
-  --seed 42 \
-  --dt 0.1 \
-  --tf 800 \
-  --coverage_target 0.98 \
-  --workers 4 \
-  --output_dir output/benchmark_seed42
+uv run python examples/run_benchmark.py
 ```
 
-`examples/benchmark_utils.py` is only the shared helper module behind the benchmark entrypoint. It is not intended to be run directly.
+The default output directory is `benchmark`.

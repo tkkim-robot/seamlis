@@ -87,9 +87,15 @@ class LocalTrackingController(_BaseLocalTrackingController):
         else:
             n_pos = 2
 
-        # Disable rotate/stop state-machine branches in seamlis.
-        # Yaw should always be produced by the active attitude controller.
-        if self.state_machine in ['rotate', 'stop']:
+        # Gatekeeper and the aggressive baselines should keep moving while their
+        # own attitude controllers produce yaw continuously. Standalone VT can
+        # use the base rotate/stop state machine to realize the intended
+        # conservative, goal-facing behavior.
+        use_heading_state_machine = (
+            self.att_controller_type == 'velocity_tracking_yaw'
+            and bool(self.robot_spec.get('velocity_tracking_heading_state_machine', True))
+        )
+        if self.state_machine in ['rotate', 'stop'] and not use_heading_state_machine:
             self.state_machine = 'track'
             self.u_att = None
 
@@ -128,8 +134,19 @@ class LocalTrackingController(_BaseLocalTrackingController):
         self.current_goal_index = 0
 
         self.goal = self.update_goal()
+        use_heading_state_machine = (
+            self.att_controller_type == 'velocity_tracking_yaw'
+            and bool(self.robot_spec.get('velocity_tracking_heading_state_machine', True))
+        )
         if self.goal is not None:
-            self.state_machine = 'track'
+            if use_heading_state_machine and not self.robot.is_in_fov(self.goal):
+                if self.robot_spec.get('exploration', False):
+                    self.state_machine = 'rotate'
+                else:
+                    self.state_machine = 'stop'
+                    self.goal = None
+            else:
+                self.state_machine = 'track'
         else:
             self.state_machine = 'idle'
             self.u_att = None
