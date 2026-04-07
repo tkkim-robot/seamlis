@@ -11,6 +11,25 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 
+MAIN_GATEKEEPER_DEFAULTS = {
+    'gatekeeper_nominal_horizon': 0.4,
+    'gatekeeper_backup_horizon': 1.8,
+    'gatekeeper_event_offset': 0.0,
+    'gatekeeper_horizon_discount': 0.05,
+    'gatekeeper_validation_slack': 0.30,
+    'gatekeeper_braking_margin': 0.90,
+}
+
+DEMO_GATEKEEPER_DEFAULTS = {
+    'gatekeeper_nominal_horizon': 1.3,
+    'gatekeeper_backup_horizon': 1.2,
+    'gatekeeper_event_offset': 0.0,
+    'gatekeeper_horizon_discount': 0.05,
+    'gatekeeper_validation_slack': 0.15,
+    'gatekeeper_braking_margin': 1.00,
+}
+
+
 def build_indoor_exploration_env():
     env_width = 24.0
     env_height = 18.0
@@ -281,7 +300,7 @@ def build_curated_demo_initial_states(num_agent):
     return [candidates[i] for i in range(num_agent)]
 
 
-def get_robot_specs(num_agent, use_astar):
+def get_robot_specs(num_agent, use_astar, demo_profile=False):
     robot_specs = []
     for robot_id in range(num_agent):
         if use_astar:
@@ -293,14 +312,6 @@ def get_robot_specs(num_agent, use_astar):
                 'sensor': 'rgbd',
                 'fov_angle': 70.0,
                 'cam_range': 4.5,
-                'w_max': 1.2,
-                'simple_yaw_rate': 0.8,
-                'velocity_tracking_yaw_kp': 4.0,
-                'velocity_tracking_yaw_preview_time': 0.55,
-                'visibility_area_kp': 1.5,
-                'visibility_area_n_yaw_samples': 24,
-                'gatekeeper_nominal_visibility_area_kp': 1.5,
-                'gatekeeper_nominal_visibility_area_n_yaw_samples': 36,
                 'num_constraints': 20,
                 'reached_threshold': 1.8,
                 'min_goal_distance': 2.6,
@@ -317,12 +328,25 @@ def get_robot_specs(num_agent, use_astar):
                 'deadlock_goal_margin': 0.9,
                 'deadlock_cooldown_s': 3.5,
                 'deadlock_max_recoveries': 12,
-                'deadlock_exclusion_growth': 0.05,
-                'deadlock_exclusion_growth_cap': 3.0,
                 'mpc_horizon': 10,
                 'mpc_cbf_alpha1': 0.55,
                 'mpc_cbf_alpha2': 0.55,
             }
+            if demo_profile:
+                robot_spec.update(
+                    {
+                        'w_max': 1.2,
+                        'simple_yaw_rate': 0.8,
+                        'velocity_tracking_yaw_kp': 4.0,
+                        'velocity_tracking_yaw_preview_time': 0.55,
+                        'visibility_area_kp': 1.5,
+                        'visibility_area_n_yaw_samples': 24,
+                        'gatekeeper_nominal_visibility_area_kp': 1.5,
+                        'gatekeeper_nominal_visibility_area_n_yaw_samples': 36,
+                        'deadlock_exclusion_growth': 0.05,
+                        'deadlock_exclusion_growth_cap': 3.0,
+                    }
+                )
         else:
             robot_spec = {
                 'model': 'DoubleIntegrator2D',
@@ -332,14 +356,6 @@ def get_robot_specs(num_agent, use_astar):
                 'sensor': 'rgbd',
                 'fov_angle': 70.0,
                 'cam_range': 4.5,
-                'w_max': 1.2,
-                'simple_yaw_rate': 0.8,
-                'velocity_tracking_yaw_kp': 4.0,
-                'velocity_tracking_yaw_preview_time': 0.55,
-                'visibility_area_kp': 1.5,
-                'visibility_area_n_yaw_samples': 24,
-                'gatekeeper_nominal_visibility_area_kp': 1.5,
-                'gatekeeper_nominal_visibility_area_n_yaw_samples': 36,
                 'num_constraints': 16,
                 'reached_threshold': 1.6,
                 'min_goal_distance': 2.2,
@@ -356,14 +372,31 @@ def get_robot_specs(num_agent, use_astar):
                 'deadlock_goal_margin': 0.9,
                 'deadlock_cooldown_s': 3.5,
                 'deadlock_max_recoveries': 12,
-                'deadlock_exclusion_growth': 0.05,
-                'deadlock_exclusion_growth_cap': 3.0,
                 'mpc_horizon': 8,
                 'mpc_cbf_alpha1': 0.45,
                 'mpc_cbf_alpha2': 0.45,
             }
+            if demo_profile:
+                robot_spec.update(
+                    {
+                        'w_max': 1.2,
+                        'simple_yaw_rate': 0.8,
+                        'velocity_tracking_yaw_kp': 4.0,
+                        'velocity_tracking_yaw_preview_time': 0.55,
+                        'visibility_area_kp': 1.5,
+                        'visibility_area_n_yaw_samples': 24,
+                        'gatekeeper_nominal_visibility_area_kp': 1.5,
+                        'gatekeeper_nominal_visibility_area_n_yaw_samples': 36,
+                        'deadlock_exclusion_growth': 0.05,
+                        'deadlock_exclusion_growth_cap': 3.0,
+                    }
+                )
         robot_specs.append(robot_spec)
     return robot_specs
+
+
+def resolve_gatekeeper_defaults(demo_profile):
+    return DEMO_GATEKEEPER_DEFAULTS if demo_profile else MAIN_GATEKEEPER_DEFAULTS
 
 
 def parse_args():
@@ -386,10 +419,11 @@ def parse_args():
     parser.add_argument(
         '--scenario',
         type=str,
-        default='curated',
+        default=None,
         choices=['curated', 'standard'],
-        help='Indoor example scenario: curated demo case or standard indoor map.',
+        help='Indoor example scenario override: curated benchmark demo or standard main-style indoor map.',
     )
+    parser.add_argument('--demo', action='store_true', help='Shorthand for the curated benchmark demo profile.')
     astar_group = parser.add_mutually_exclusive_group()
     astar_group.add_argument('--use_astar', dest='use_astar', action='store_true', help='Enable A* corridor waypoints.')
     astar_group.add_argument('--no-astar', dest='use_astar', action='store_false', help='Disable A* waypoints.')
@@ -418,37 +452,37 @@ def parse_args():
     parser.add_argument(
         '--gatekeeper_nominal_horizon',
         type=float,
-        default=1.3,
+        default=None,
         help='Gatekeeper nominal horizon [s].',
     )
     parser.add_argument(
         '--gatekeeper_backup_horizon',
         type=float,
-        default=1.2,
+        default=None,
         help='Gatekeeper backup horizon [s].',
     )
     parser.add_argument(
         '--gatekeeper_event_offset',
         type=float,
-        default=0.0,
+        default=None,
         help='Gatekeeper event offset [s].',
     )
     parser.add_argument(
         '--gatekeeper_horizon_discount',
         type=float,
-        default=0.05,
+        default=None,
         help='Gatekeeper nominal-horizon discount step [s].',
     )
     parser.add_argument(
         '--gatekeeper_validation_slack',
         type=float,
-        default=0.15,
+        default=None,
         help='Extra slack [m] for braking-distance monitor.',
     )
     parser.add_argument(
         '--gatekeeper_braking_margin',
         type=float,
-        default=1.00,
+        default=None,
         help='Extra conservative braking margin [m].',
     )
     parser.add_argument(
@@ -498,12 +532,16 @@ def main():
     from safe_control.utils import env
 
     layout = args.layout
+    scenario = args.scenario
+    if scenario is None:
+        scenario = 'curated' if args.demo else 'standard'
+    demo_profile = scenario == 'curated'
     if args.use_astar is None:
-        use_astar = True if args.scenario == 'curated' else (layout == 'indoor')
+        use_astar = True if scenario == 'curated' else (layout == 'indoor')
     else:
         use_astar = bool(args.use_astar)
 
-    if args.scenario == 'curated':
+    if scenario == 'curated':
         env_width, env_height, known_obs, unknown_obs = build_curated_demo_env()
         x0s = build_curated_demo_initial_states(args.num_agent)
     elif layout == 'indoor':
@@ -523,9 +561,10 @@ def main():
     if args.no_render and args.save_anim:
         print('`--save_anim` requires rendering. Ignoring save request because `--no_render` is set.')
 
-    robot_specs = get_robot_specs(args.num_agent, use_astar=use_astar)
+    gatekeeper_defaults = resolve_gatekeeper_defaults(demo_profile)
+    robot_specs = get_robot_specs(args.num_agent, use_astar=use_astar, demo_profile=demo_profile)
     for robot_spec in robot_specs:
-        if args.scenario == 'curated' and args.attitude == 'visibility_area':
+        if demo_profile and args.attitude == 'visibility_area':
             robot_spec['visibility_area_kp'] = 0.25
         if args.fov_angle is not None:
             robot_spec['fov_angle'] = float(args.fov_angle)
@@ -542,12 +581,36 @@ def main():
             robot_spec['visibility_violation_mode'] = 'point_mass'
             robot_spec['gatekeeper_nominal'] = args.gatekeeper_nominal
             robot_spec['gatekeeper_backup'] = args.gatekeeper_backup
-            robot_spec['gatekeeper_nominal_horizon'] = float(args.gatekeeper_nominal_horizon)
-            robot_spec['gatekeeper_backup_horizon'] = float(args.gatekeeper_backup_horizon)
-            robot_spec['gatekeeper_event_offset'] = float(args.gatekeeper_event_offset)
-            robot_spec['gatekeeper_horizon_discount'] = float(args.gatekeeper_horizon_discount)
-            robot_spec['gatekeeper_validation_slack'] = float(args.gatekeeper_validation_slack)
-            robot_spec['gatekeeper_braking_distance_margin'] = float(args.gatekeeper_braking_margin)
+            robot_spec['gatekeeper_nominal_horizon'] = float(
+                gatekeeper_defaults['gatekeeper_nominal_horizon']
+                if args.gatekeeper_nominal_horizon is None
+                else args.gatekeeper_nominal_horizon
+            )
+            robot_spec['gatekeeper_backup_horizon'] = float(
+                gatekeeper_defaults['gatekeeper_backup_horizon']
+                if args.gatekeeper_backup_horizon is None
+                else args.gatekeeper_backup_horizon
+            )
+            robot_spec['gatekeeper_event_offset'] = float(
+                gatekeeper_defaults['gatekeeper_event_offset']
+                if args.gatekeeper_event_offset is None
+                else args.gatekeeper_event_offset
+            )
+            robot_spec['gatekeeper_horizon_discount'] = float(
+                gatekeeper_defaults['gatekeeper_horizon_discount']
+                if args.gatekeeper_horizon_discount is None
+                else args.gatekeeper_horizon_discount
+            )
+            robot_spec['gatekeeper_validation_slack'] = float(
+                gatekeeper_defaults['gatekeeper_validation_slack']
+                if args.gatekeeper_validation_slack is None
+                else args.gatekeeper_validation_slack
+            )
+            robot_spec['gatekeeper_braking_distance_margin'] = float(
+                gatekeeper_defaults['gatekeeper_braking_margin']
+                if args.gatekeeper_braking_margin is None
+                else args.gatekeeper_braking_margin
+            )
     env_handler = env.Env(
         width=env_width,
         height=env_height,
