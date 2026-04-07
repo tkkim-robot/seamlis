@@ -9,6 +9,17 @@ from algorithms.kmeans import kmeans
 class CoScanPlanner:
     def __init__(self):
         self.global_goals = None
+
+    @staticmethod
+    def _clip_agent_pos(agent_pos, map_shape):
+        max_xy = np.array([map_shape[1] - 1, map_shape[0] - 1], dtype=np.int32)
+        return np.clip(np.asarray(agent_pos, dtype=np.int32), [0, 0], max_xy)
+
+    @staticmethod
+    def _clip_goal(goal, map_shape):
+        gx = int(np.clip(int(goal[0]), 0, map_shape[1] - 1))
+        gy = int(np.clip(int(goal[1]), 0, map_shape[0] - 1))
+        return gx, gy
         
     def get_long_term_goals(self, np_obstacle_map, np_frontier_map, agent_pos, agent_orientations):
         '''
@@ -22,6 +33,7 @@ class CoScanPlanner:
         num_agent = agent_pos.shape[0]
         np_frontier_map = np.copy(np_frontier_map)
         np_obstacle_map_distance = []
+        agent_pos = self._clip_agent_pos(agent_pos, np_obstacle_map.shape)
 
         # Compute distance maps and mask unreachable areas
         dd_mask = np.ones(np_obstacle_map.shape, dtype=bool)
@@ -65,7 +77,8 @@ class CoScanPlanner:
         # goal: [x,y]
         gx1, gx2, gy1, gy2 = planning_window
         np_obstacle_map = np.ma.masked_values(np_obstacle_map, 1)
-        np_obstacle_map[goal[1], goal[0]] = 1
+        gx, gy = self._clip_goal(goal, np_obstacle_map.shape)
+        np_obstacle_map[gy, gx] = 1
         dd = skfmm.distance(1 - np_obstacle_map)[gy1:gy2, gx1:gx2]
         dd[np_frontier_map[gy1:gy2, gx1:gx2] == 0] = np.inf
         goal = np.unravel_index(np.argmin(dd), dd.shape)
@@ -82,7 +95,8 @@ class CoScanPlanner:
                 stopped = False
                 self.global_goals = None
                 return True
-            elif np_frontier_map[goal[1], goal[0]] == 0:
+            gx, gy = self._clip_goal(goal, np_frontier_map.shape)
+            if np_frontier_map[gy, gx] == 0:
                 self.global_goals = None
                 return True
         return False
