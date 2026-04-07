@@ -203,7 +203,7 @@ def build_curated_demo_env():
             [21.24, 16.08, 0.29],
             [1.92, 11.85, 0.22],
             [2.21, 10.0, 0.22],
-            [2.0, 4.2, 0.24],
+            [2.0, 8.0, 0.32],
             [4.95, 13.2, 0.24],
             [6.26, 1.65, 0.24],
             [6.15, 3.0, 0.24],
@@ -498,9 +498,12 @@ def main():
     from safe_control.utils import env
 
     layout = args.layout
-    use_astar = (layout == 'indoor') if args.use_astar is None else bool(args.use_astar)
+    if args.use_astar is None:
+        use_astar = True if args.scenario == 'curated' else (layout == 'indoor')
+    else:
+        use_astar = bool(args.use_astar)
 
-    if layout == 'indoor' and args.scenario == 'curated':
+    if args.scenario == 'curated':
         env_width, env_height, known_obs, unknown_obs = build_curated_demo_env()
         x0s = build_curated_demo_initial_states(args.num_agent)
     elif layout == 'indoor':
@@ -522,6 +525,8 @@ def main():
 
     robot_specs = get_robot_specs(args.num_agent, use_astar=use_astar)
     for robot_spec in robot_specs:
+        if args.scenario == 'curated' and args.attitude == 'visibility_area':
+            robot_spec['visibility_area_kp'] = 0.25
         if args.fov_angle is not None:
             robot_spec['fov_angle'] = float(args.fov_angle)
         if args.cam_range is not None:

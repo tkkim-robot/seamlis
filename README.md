@@ -30,20 +30,21 @@ To install `seamlis`, follow these steps:
 
 ## Exploration Test Cases
 
-`examples/test_exploration.py` defaults to an indoor layout with A* waypoints and frontier exploration.
+`examples/test_exploration.py` defaults to a curated benchmark-derived demo case with frontier exploration.
 
 Default behavior:
-- `--layout indoor`, `--scenario curated`, and A* enabled (open layout defaults to no A*).
+- `--scenario curated`.
 - `--unknown` enabled.
 - `--unknown_profile default`.
 - `--algo frontier`.
 - `--attitude velocity_tracking_yaw`.
+- A* disabled unless explicitly enabled.
 - `--dt 0.1`, `--tf 300.0`, `--coverage_target 0.98`.
 
 Quick runs:
 
 ```bash
-# Default 2-agent indoor exploration
+# Default 2-agent demo exploration
 uv run python examples/test_exploration.py --num_agent 2
 
 # Gatekeeper (default nominal=visibility_area, backup=velocity_tracking_yaw)
@@ -67,24 +68,24 @@ Useful arguments:
 - `--num_agent {1,2,3}`
 - `--algo {frontier,coscan}`
 - `--attitude {velocity_tracking_yaw,visibility_area,simple,gatekeeper,...}`
-- `--layout {indoor,open}`, `--use_astar`, `--no-astar`
+- `--layout {indoor,open}`, `--scenario {curated,standard}`, `--use_astar`, `--no-astar`
 - `--unknown_profile {default,stress}`
 - `--hide_visibility_violations` (hide red violation dots in animation; counting is unchanged)
 - `--save_anim` (exports `output/animations/tracking.mp4`; requires rendering)
 
 Gatekeeper tuning arguments:
 - `--gatekeeper_nominal {visibility_area,simple,velocity_tracking_yaw}`
-- `--gatekeeper_nominal_horizon` (default: `0.4`)
+- `--gatekeeper_nominal_horizon` (default: `1.3`)
 - `--gatekeeper_event_offset` (default: `0.0`)
-- `--gatekeeper_backup_horizon` (default: `1.8`)
+- `--gatekeeper_backup_horizon` (default: `1.2`)
 - `--gatekeeper_horizon_discount` (default: `0.05`)
-- `--gatekeeper_validation_slack` (default: `0.30`)
-- `--gatekeeper_braking_margin` (default: `0.90`)
+- `--gatekeeper_validation_slack` (default: `0.15`)
+- `--gatekeeper_braking_margin` (default: `1.00`)
 
 Additional examples:
 
 ```bash
-# Open layout (A* off by default)
+# Standard open layout (A* off by default)
 uv run python examples/test_exploration.py --layout open --num_agent 2
 
 # Standard indoor map
