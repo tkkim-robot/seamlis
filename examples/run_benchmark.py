@@ -146,6 +146,42 @@ PAPER_TIMEOUT_BY_AGENTS: Dict[int, float] = {
     3: 60.0,
 }
 
+BENCHMARK_ROW_ROBOT_SPEC_OVERRIDES: Dict[Tuple[str, int, str], Dict[str, object]] = {
+    (
+        "frontier",
+        1,
+        "velocity_tracking_yaw",
+    ): {
+        "w_max": 1.6,
+    },
+    (
+        "frontier",
+        1,
+        "simple",
+    ): {
+        "w_max": 1.6,
+    },
+    (
+        "frontier",
+        1,
+        "visibility_area",
+    ): {
+        # Benchmark-only tune for the single-agent frontier row. This keeps the
+        # visibility-first controller fast on the anchor/open blindside pool
+        # without affecting non-benchmark exploration behavior.
+        "visibility_area_kp": 2.2,
+        "visibility_area_n_yaw_samples": 16,
+        "w_max": 1.6,
+    },
+    (
+        "frontier",
+        1,
+        "gatekeeper",
+    ): {
+        "w_max": 1.6,
+    },
+}
+
 
 def _format_pool_counts(expanded_recipes: Dict[Tuple[str, int], List[str]]) -> List[str]:
     lines: List[str] = []
@@ -156,6 +192,16 @@ def _format_pool_counts(expanded_recipes: Dict[Tuple[str, int], List[str]]) -> L
         counts_str = ", ".join(f"`{token}` x{count}" for token, count in counts.items())
         lines.append(f"- Fixed pool `{algo}/n{num_agent}`: {counts_str}")
     return lines
+
+
+def get_benchmark_row_robot_spec_overrides(
+    *,
+    algo: str,
+    num_agent: int,
+    attitude: str,
+) -> Dict[str, object]:
+    overrides = BENCHMARK_ROW_ROBOT_SPEC_OVERRIDES.get((str(algo), int(num_agent), str(attitude)))
+    return dict(overrides) if overrides is not None else {}
 
 
 def _benchmark_metadata_lines(
@@ -190,6 +236,14 @@ def _benchmark_metadata_lines(
             "The `No Timeout` column reports the unconditional mean over successful trials."
         ),
         f"- Benchmark robot/controller defaults (A* case, shared across robots except `robot_id`): `{json.dumps(benchmark_spec, sort_keys=True)}`",
+        (
+            "- Benchmark row-specific robot-spec overrides: "
+            + ", ".join(
+                f"`{algo}/n{num_agent}/{attitude}` -> `{json.dumps(overrides, sort_keys=True)}`"
+                for (algo, num_agent, attitude), overrides in sorted(BENCHMARK_ROW_ROBOT_SPEC_OVERRIDES.items())
+            )
+            + "."
+        ),
         "- Row-wise frozen map pool used for this benchmark:",
     ]
     lines.extend(_format_pool_counts(expanded_recipes))
@@ -232,13 +286,20 @@ def _expand_recipe(base_families: List[str], trials_per_row: int) -> List[str]:
     return expanded
 
 
-def _job_signature(map_cfg: MapConfig, num_agent: int, algo: str, attitude: str) -> Tuple[int, str, str, str]:
+def _job_signature(
+    map_cfg: MapConfig,
+    num_agent: int,
+    algo: str,
+    attitude: str,
+    robot_spec_overrides: Dict[str, object],
+) -> Tuple[int, str, str, str, str]:
     geom_hash = hashlib.sha256()
     geom_hash.update(np.ascontiguousarray(map_cfg.known_obs, dtype=np.float64).tobytes())
     geom_hash.update(np.ascontiguousarray(map_cfg.unknown_obs, dtype=np.float64).tobytes())
     if map_cfg.initial_states is not None:
         geom_hash.update(np.ascontiguousarray(map_cfg.initial_states, dtype=np.float64).tobytes())
-    return int(num_agent), str(algo), str(attitude), geom_hash.hexdigest()
+    override_token = json.dumps(robot_spec_overrides, sort_keys=True)
+    return int(num_agent), str(algo), str(attitude), geom_hash.hexdigest(), override_token
 
 
 def build_map(seed: int, layout_index: int, variant: str, map_id: str) -> MapConfig:
@@ -496,9 +557,14 @@ def main() -> None:
             continue
         pending_jobs.append((map_cfg, num_agent, algo, attitude, family_name))
 
-    dedup_jobs: Dict[Tuple[int, str, str, str], Dict[str, object]] = {}
+    dedup_jobs: Dict[Tuple[int, str, str, str, str], Dict[str, object]] = {}
     for map_cfg, num_agent, algo, attitude, family_name in pending_jobs:
-        sig = _job_signature(map_cfg, num_agent, algo, attitude)
+        robot_spec_overrides = get_benchmark_row_robot_spec_overrides(
+            algo=algo,
+            num_agent=num_agent,
+            attitude=attitude,
+        )
+        sig = _job_signature(map_cfg, num_agent, algo, attitude, robot_spec_overrides)
         group = dedup_jobs.get(sig)
         if group is None:
             group = {
@@ -506,6 +572,7 @@ def main() -> None:
                 "num_agent": num_agent,
                 "algo": algo,
                 "attitude": attitude,
+                "robot_spec_overrides": robot_spec_overrides,
                 "aliases": [],
             }
             dedup_jobs[sig] = group
@@ -519,6 +586,7 @@ def main() -> None:
             num_agent = int(group["num_agent"])
             algo = str(group["algo"])
             attitude = str(group["attitude"])
+            robot_spec_overrides = dict(group["robot_spec_overrides"])
             row = run_exploration_case(
                 map_cfg=map_cfg,
                 num_agent=num_agent,
@@ -529,6 +597,7 @@ def main() -> None:
                 coverage_target=args.coverage_target,
                 use_astar=True,
                 gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
+                robot_spec_overrides=robot_spec_overrides,
             )
             for alias_map_id, family_name in group["aliases"]:
                 done += 1
@@ -552,6 +621,7 @@ def main() -> None:
                 num_agent = int(group["num_agent"])
                 algo = str(group["algo"])
                 attitude = str(group["attitude"])
+                robot_spec_overrides = dict(group["robot_spec_overrides"])
                 fut = ex.submit(
                     run_exploration_case,
                     map_cfg,
@@ -563,6 +633,7 @@ def main() -> None:
                     args.coverage_target,
                     True,
                     DEFAULT_GATEKEEPER_PARAMS,
+                    robot_spec_overrides,
                 )
                 future_map[fut] = group
             done = 0

@@ -451,6 +451,7 @@ def run_exploration_case(
     coverage_target: float,
     use_astar: bool,
     gatekeeper_params: Dict[str, float],
+    robot_spec_overrides: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     # Make each benchmark case deterministic regardless of process scheduling.
     geom_hash = hashlib.sha256()
@@ -478,6 +479,8 @@ def run_exploration_case(
         if attitude == "gatekeeper":
             spec["w_max"] = float(spec.get("w_max", 1.2))
             spec.update(gatekeeper_params)
+        if robot_spec_overrides:
+            spec.update(robot_spec_overrides)
 
     env_handler = env.Env(
         width=24.0,
