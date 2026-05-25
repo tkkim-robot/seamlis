@@ -40,19 +40,7 @@ except ModuleNotFoundError:
         def __getattr__(self, name):
             return getattr(self._axes, name)
 
-"""
-Created on June 22nd, 2024
-@author: Taekyung Kim
-
-@description: 
-
-@functions to be implemented: 
-    An Exploration class
-        1. correctly assign frontier as goal
-        2. assign global goal at every iterations? or just assign it after it reaches the goal?
-
-@required-scripts: tracking.py, utils/plotting.py, utils/env.py, algorithms/co_scan.py
-"""
+"""Exploration manager for multi-robot frontier and CoScan experiments."""
 
 
 def _normalize_obs_array(obs):
@@ -117,7 +105,6 @@ class ExplorationManager:
                 height=self.env_handler.height,
                 known_obs=self.known_obs,
             )
-            # Keep animation output untitled for cleaner hero figures/videos.
             self.ax, self.fig = self.plot_handler.plot_grid("")
         else:
             self.plot_handler = None
@@ -738,7 +725,7 @@ class ExplorationManager:
                     f"Exploration stopped after reaching max_steps={max_steps}. "
                     f"Coverage={self.last_coverage_ratio:.3f}."
                 )
-                self._finalize_failure()
+                self._finalize_animation()
                 return False
 
             robots_reached_goals = self.move_robots()
@@ -1386,65 +1373,4 @@ class ExplorationManager:
 
     def exploration_complete(self):
         return len(self.frontiers.coords) == 0
-        
-
-def main():
-    dt = 0.1
-
-    # temporal
-    waypoints = [
-        [2, 2, math.pi/2],
-        [2, 12, 0],
-        [10, 12, 0],
-        [15, 2, math.pi/2]
-    ]
-    waypoints = np.array(waypoints, dtype=np.float64)
-    x_init = waypoints[0]
-    x_init2 = waypoints[-1]
-
-    # define as much robot specs as you want
-    robot_spec_1 = {
-        'model': 'DoubleIntegrator2D',
-        'sensor': 'rgbd',
-        'cam_range': 5.0,
-        'reached_threshold': 2.0,
-        'exploration': True
-    }
-    robot_spec_2 = {
-        'model': 'DoubleIntegrator2D',
-        'sensor': 'rgbd',
-        'cam_range': 7.0,
-        'reached_threshold': 2.0,
-        'exploration': True
-    }
-
-    robot_specs = [robot_spec_1, robot_spec_2]
-    for i, robot_spec in enumerate(robot_specs):
-        robot_spec['robot_id'] = i
-
-    controller_type = {
-        'pos': 'mpc_cbf',
-        'att': 'gatekeeper'
-    }
-
-    exploration = ExplorationManager([x_init, x_init2], robot_specs, controller_type,
-                                    exploration_algorithm='CoScan',
-                                     dt=dt,
-                                    show_animation=True,
-                                    save_animation=True)
-    exploration.explore()
-    # to check the set_waypoints function
-        # exploration.set_waypoints(0, waypoints)
-        # exploration.set_waypoints(1, waypoints[::-1])
-        # for i in range(1000):
-        #     exploration.control_step()
-    
-
-if __name__ == "__main__":
-    from utils import plotting
-    from utils import env
-    import math
-    
-    main()
-
     

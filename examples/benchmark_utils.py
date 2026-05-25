@@ -1,14 +1,11 @@
 """Shared benchmark helpers used by the public run_benchmark.py entrypoint."""
 
-import argparse
-import concurrent.futures
 import csv
 import hashlib
 import json
 import math
 import os
 import random
-import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -37,12 +34,10 @@ if REPO_ROOT not in sys.path:
 
 from exploration import ExplorationManager
 from safe_control.utils import env
-from examples.test_exploration import build_indoor_exploration_env, build_initial_states, get_robot_specs
+from examples.test_exploration import build_initial_states, get_robot_specs
 
 
 ATTITUDES = ["velocity_tracking_yaw", "simple", "visibility_area", "gatekeeper"]
-ALGOS = ["frontier", "coscan"]
-AGENT_COUNTS = [1, 2, 3]
 BENCHMARK_START_POSITIONS = np.array(
     [
         [2.0, 2.0],
@@ -566,11 +561,6 @@ def run_exploration_case(
     return result
 
 
-def write_json(path: str, data: object) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
 def append_csv(path: str, row: Dict[str, object], header: List[str]) -> None:
     file_exists = os.path.exists(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
@@ -665,14 +655,14 @@ def summarize_results(
 def render_summary_markdown(
     summary_rows: List[Dict[str, object]],
     output_path: str,
-    hero_map_id: str,
+    representative_map_id: str,
     gatekeeper_params: Dict[str, float],
     metadata_lines: Optional[List[str]] = None,
 ) -> None:
     lines = []
     lines.append("# Exploration Benchmark Summary")
     lines.append("")
-    lines.append(f"- Hero map id: `{hero_map_id}`")
+    lines.append(f"- Representative map id: `{representative_map_id}`")
     lines.append(f"- Gatekeeper params: `{json.dumps(gatekeeper_params, sort_keys=True)}`")
     if metadata_lines:
         lines.extend(metadata_lines)
@@ -719,319 +709,3 @@ def map_to_serializable(map_cfg: MapConfig) -> Dict[str, object]:
         "unknown_obs": map_cfg.unknown_obs.tolist(),
         "initial_states": None if map_cfg.initial_states is None else np.asarray(map_cfg.initial_states, dtype=float).tolist(),
     }
-
-
-def is_hero_case(
-    simple_res_n2: Dict[str, object],
-    vis_res_n2: Dict[str, object],
-    gk_res_n2: Dict[str, object],
-    simple_res_n3: Optional[Dict[str, object]],
-    vis_res_n3: Optional[Dict[str, object]],
-    gk_res_n3: Optional[Dict[str, object]],
-    max_gatekeeper_visibility: int,
-) -> bool:
-    gk_n2_ok = bool(gk_res_n2["success"]) and (not bool(gk_res_n2["collision_or_infeasible"])) and (
-        int(gk_res_n2["visibility_total"]) <= max_gatekeeper_visibility
-    )
-    simple_n2_ok = bool(simple_res_n2["unknown_collision"])
-    vis_n2_ok = bool(vis_res_n2["unknown_collision"])
-
-    # Prefer hero maps where both 2-agent and 3-agent baselines fail while
-    # gatekeeper stays safe. If n=3 data is unavailable, fall back to n=2.
-    if simple_res_n3 is not None and vis_res_n3 is not None and gk_res_n3 is not None:
-        gk_n3_ok = bool(gk_res_n3["success"]) and (not bool(gk_res_n3["collision_or_infeasible"])) and (
-            int(gk_res_n3["visibility_total"]) <= max_gatekeeper_visibility
-        )
-        simple_n3_ok = bool(simple_res_n3["unknown_collision"])
-        vis_n3_ok = bool(vis_res_n3["unknown_collision"])
-        return bool(gk_n2_ok and gk_n3_ok and simple_n2_ok and simple_n3_ok and vis_n2_ok and vis_n3_ok)
-
-    return bool(gk_n2_ok and simple_n2_ok and vis_n2_ok)
-
-
-def find_hero_map_id(rows: List[Dict[str, object]], max_gatekeeper_visibility: int) -> Optional[str]:
-    map_ids = sorted({str(r["map_id"]) for r in rows})
-    preferred_algos = ["coscan", "frontier"]
-    for algo in preferred_algos:
-        for map_id in map_ids:
-            lookup = {}
-            for r in rows:
-                if str(r["map_id"]) != map_id:
-                    continue
-                key = (int(r["num_agent"]), str(r["algo"]), str(r["attitude"]))
-                lookup[key] = r
-            simple_res_n2 = lookup.get((2, algo, "simple"))
-            vis_res_n2 = lookup.get((2, algo, "visibility_area"))
-            gk_res_n2 = lookup.get((2, algo, "gatekeeper"))
-            if simple_res_n2 is None or vis_res_n2 is None or gk_res_n2 is None:
-                continue
-            if is_hero_case(
-                simple_res_n2=simple_res_n2,
-                vis_res_n2=vis_res_n2,
-                gk_res_n2=gk_res_n2,
-                simple_res_n3=lookup.get((3, algo, "simple")),
-                vis_res_n3=lookup.get((3, algo, "visibility_area")),
-                gk_res_n3=lookup.get((3, algo, "gatekeeper")),
-                max_gatekeeper_visibility=max_gatekeeper_visibility,
-            ):
-                return map_id
-    return None
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Seeded random exploration benchmark.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for map sampling.")
-    parser.add_argument("--num_trials", type=int, default=10, help="Number of sampled map trials.")
-    parser.add_argument("--max_candidates", type=int, default=150, help="Maximum sampled candidate maps.")
-    parser.add_argument("--dt", type=float, default=0.1, help="Simulation dt.")
-    parser.add_argument("--tf", type=float, default=420.0, help="Simulation horizon [s].")
-    parser.add_argument("--coverage_target", type=float, default=0.98, help="Coverage success threshold.")
-    parser.add_argument(
-        "--hero_max_gatekeeper_visibility",
-        type=int,
-        default=0,
-        help="Maximum total visibility violations allowed for hero gatekeeper run.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="output/benchmark_seed42",
-        help="Directory for benchmark artifacts.",
-    )
-    parser.add_argument(
-        "--max_attempts",
-        type=int,
-        default=4,
-        help="Retry attempts with new seeded map batches if constraints are not met.",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Parallel workers for benchmark simulations.",
-    )
-    args = parser.parse_args()
-
-    os.makedirs(args.output_dir, exist_ok=True)
-    raw_csv_path = os.path.join(args.output_dir, "raw_results.csv")
-    maps_json_path = os.path.join(args.output_dir, "trial_maps.json")
-    hero_json_path = os.path.join(args.output_dir, "hero_case.json")
-    summary_md_path = os.path.join(args.output_dir, "summary.md")
-
-    env_width, env_height, base_known_obs, _ = build_indoor_exploration_env()
-    starts = np.array([s[:2] for s in build_initial_states(3)], dtype=float)
-
-    header = [
-        "map_id",
-        "num_agent",
-        "algo",
-        "attitude",
-        "success",
-        "coverage",
-        "termination_reason",
-        "step_count",
-        "sim_time",
-        "wallclock_time",
-        "visibility_total",
-        "visibility_per_robot",
-        "collision_or_infeasible",
-        "collision_type",
-        "collision_stage",
-        "unknown_collision",
-        "exploration_time_success",
-        "collision_info_json",
-        "gatekeeper_nominal_avg",
-    ]
-
-    final_rows: Optional[List[Dict[str, object]]] = None
-    final_maps: Optional[List[MapConfig]] = None
-    final_hero_map_id: Optional[str] = None
-    final_attempt_csv: Optional[str] = None
-
-    for attempt in range(args.max_attempts):
-        attempt_seed = args.seed + 1000 * attempt
-        rng = np.random.default_rng(attempt_seed)
-        attempt_csv_path = os.path.join(args.output_dir, f"raw_results_attempt_{attempt:02d}.csv")
-        if os.path.exists(attempt_csv_path):
-            os.remove(attempt_csv_path)
-
-        trial_maps: List[MapConfig] = []
-        for i in range(args.num_trials):
-            map_cfg = generate_random_indoor_map(
-                rng=rng,
-                map_index=attempt * 1000 + i,
-                base_known_obs=base_known_obs,
-                env_width=env_width,
-                env_height=env_height,
-                starts_xy=starts,
-            )
-            map_cfg.map_id = f"a{attempt:02d}_m{i:02d}"
-            trial_maps.append(map_cfg)
-
-        all_rows: List[Dict[str, object]] = []
-
-        safe_precheck_jobs = []
-        remaining_jobs = []
-        for map_cfg in trial_maps:
-            for num_agent in AGENT_COUNTS:
-                for algo in ALGOS:
-                    safe_precheck_jobs.append((map_cfg, num_agent, algo, "gatekeeper"))
-                    safe_precheck_jobs.append((map_cfg, num_agent, algo, "velocity_tracking_yaw"))
-                    remaining_jobs.append((map_cfg, num_agent, algo, "simple"))
-                    remaining_jobs.append((map_cfg, num_agent, algo, "visibility_area"))
-
-        def _run_job_list(jobs: List[Tuple[MapConfig, int, str, str]], offset: int, total: int) -> List[Dict[str, object]]:
-            rows = []
-            if args.workers <= 1:
-                for idx, (map_cfg, num_agent, algo, attitude) in enumerate(jobs, start=1):
-                    run_idx = offset + idx
-                    print(
-                        f"  run {run_idx:03d}/{total}: "
-                        f"map={map_cfg.map_id}, agents={num_agent}, algo={algo}, att={attitude}"
-                    )
-                    row = run_exploration_case(
-                        map_cfg=map_cfg,
-                        num_agent=num_agent,
-                        algo=algo,
-                        attitude=attitude,
-                        dt=args.dt,
-                        tf=args.tf,
-                        coverage_target=args.coverage_target,
-                        use_astar=True,
-                        gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
-                    )
-                    row["attempt"] = int(attempt)
-                    rows.append(row)
-                    append_csv(attempt_csv_path, row=row, header=header + ["attempt"])
-                return rows
-
-            with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-                future_to_job = {}
-                for map_cfg, num_agent, algo, attitude in jobs:
-                    fut = executor.submit(
-                        run_exploration_case,
-                        map_cfg,
-                        num_agent,
-                        algo,
-                        attitude,
-                        args.dt,
-                        args.tf,
-                        args.coverage_target,
-                        True,
-                        DEFAULT_GATEKEEPER_PARAMS,
-                    )
-                    future_to_job[fut] = (map_cfg.map_id, num_agent, algo, attitude)
-
-                completed = 0
-                for fut in concurrent.futures.as_completed(future_to_job):
-                    completed += 1
-                    map_id, num_agent, algo, attitude = future_to_job[fut]
-                    try:
-                        row = fut.result()
-                    except Exception as exc:
-                        row = {
-                            "map_id": map_id,
-                            "num_agent": int(num_agent),
-                            "algo": str(algo),
-                            "attitude": str(attitude),
-                            "success": False,
-                            "coverage": 0.0,
-                            "termination_reason": "exception",
-                            "step_count": 0,
-                            "sim_time": 0.0,
-                            "wallclock_time": 0.0,
-                            "visibility_total": 0,
-                            "visibility_per_robot": "[]",
-                            "collision_or_infeasible": True,
-                            "collision_type": "exception",
-                            "collision_stage": "",
-                            "unknown_collision": False,
-                            "exploration_time_success": None,
-                            "collision_info_json": json.dumps({"error": str(exc)}),
-                            "gatekeeper_nominal_avg": None,
-                        }
-                    row["attempt"] = int(attempt)
-                    rows.append(row)
-                    append_csv(attempt_csv_path, row=row, header=header + ["attempt"])
-                    print(
-                        f"  completed {offset + completed:03d}/{total}: "
-                        f"map={map_id}, agents={num_agent}, algo={algo}, att={attitude}, "
-                        f"success={row['success']}, coll_or_inf={row['collision_or_infeasible']}"
-                    )
-            return rows
-
-        total_runs = len(safe_precheck_jobs) + len(remaining_jobs)
-        print(
-            f"[attempt {attempt + 1}/{args.max_attempts}] seed={attempt_seed} "
-            f"running safety precheck ({len(safe_precheck_jobs)} sims) with workers={args.workers}..."
-        )
-        safe_rows = _run_job_list(safe_precheck_jobs, offset=0, total=total_runs)
-        all_rows.extend(safe_rows)
-        safe_bad = [r for r in safe_rows if bool(r["collision_or_infeasible"])]
-        safe_not_success = [r for r in safe_rows if not bool(r["success"])]
-        if len(safe_bad) > 0 or len(safe_not_success) > 0:
-            print(
-                f"[attempt {attempt + 1}] safety precheck failed: "
-                f"{len(safe_bad)} collision/infeasible, {len(safe_not_success)} non-success runs. "
-                "Retrying with next seed batch."
-            )
-            continue
-
-        print(
-            f"[attempt {attempt + 1}] safety precheck passed. "
-            f"Running remaining jobs ({len(remaining_jobs)} sims)..."
-        )
-        other_rows = _run_job_list(remaining_jobs, offset=len(safe_precheck_jobs), total=total_runs)
-        all_rows.extend(other_rows)
-
-        hero_map_id = find_hero_map_id(all_rows, max_gatekeeper_visibility=args.hero_max_gatekeeper_visibility)
-
-        gk_vis_per_robot = []
-        for r in safe_rows:
-            if str(r["attitude"]) != "gatekeeper":
-                continue
-            gk_vis_per_robot.append(float(r["visibility_total"]) / max(int(r["num_agent"]), 1))
-        gk_vis_mean = float(np.mean(gk_vis_per_robot)) if len(gk_vis_per_robot) > 0 else 0.0
-
-        print(
-            f"[attempt {attempt + 1}] safety bad runs={len(safe_bad)}, "
-            f"safety non-success runs={len(safe_not_success)}, "
-            f"gatekeeper mean vis/robot={gk_vis_mean:.3f}, hero_map={hero_map_id}"
-        )
-
-        if len(safe_bad) == 0 and len(safe_not_success) == 0 and hero_map_id is not None:
-            final_rows = all_rows
-            final_maps = trial_maps
-            final_hero_map_id = hero_map_id
-            final_attempt_csv = attempt_csv_path
-            break
-
-    if final_rows is None or final_maps is None or final_hero_map_id is None or final_attempt_csv is None:
-        raise RuntimeError(
-            "Failed to satisfy benchmark constraints. "
-            "Increase --max_attempts or relax --hero_max_gatekeeper_visibility."
-        )
-
-    # Persist selected artifacts.
-    shutil.copyfile(final_attempt_csv, raw_csv_path)
-    serial_maps = [map_to_serializable(m) for m in final_maps]
-    write_json(maps_json_path, serial_maps)
-    hero_map_obj = next(m for m in final_maps if m.map_id == final_hero_map_id)
-    write_json(hero_json_path, map_to_serializable(hero_map_obj))
-
-    summary_rows = summarize_results(final_rows)
-    render_summary_markdown(
-        summary_rows=summary_rows,
-        output_path=summary_md_path,
-        hero_map_id=final_hero_map_id,
-        gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
-    )
-
-    print(f"Saved benchmark summary to: {summary_md_path}")
-    print(f"Saved raw rows to: {raw_csv_path}")
-    print(f"Saved trial maps to: {maps_json_path}")
-    print(f"Saved hero map to: {hero_json_path}")
-
-
-if __name__ == "__main__":
-    main()

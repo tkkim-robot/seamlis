@@ -1,3 +1,5 @@
+"""Regression check for assignment-churn recovery."""
+
 import os
 import sys
 
@@ -141,7 +143,7 @@ def main():
     if recovery_goal is None or float(recovery_goal[0]) <= 10.5:
         raise RuntimeError("Recovery goal should jump to the distant frontier band.")
 
-    print("debug_assignment_oscillation: PASS")
+    print("assignment_oscillation_regression: PASS")
 
 
 if __name__ == "__main__":

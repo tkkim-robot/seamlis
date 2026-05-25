@@ -50,15 +50,15 @@ uv run python examples/test_exploration.py --num_agent 2
 # Same default case with gatekeeper
 uv run python examples/test_exploration.py --num_agent 2 --attitude gatekeeper
 
-# (Collision) Unsafe scenario for visibitiliy-agnostic controllers
+# (Collision) Unsafe scenario for visibility-agnostic controllers
 uv run python examples/test_exploration.py --num_agent 2 --demo --attitude simple
 
-# (Collision) Unsafe scenario for visibitiliy-agnostic controllers:
+# (Collision) Unsafe scenario for visibility-agnostic controllers:
 # Visibility Area (prioritizing mapping information only)
 uv run python examples/test_exploration.py --num_agent 2 --demo --attitude visibility_area
 
-# Same scenario for visibitiliy-aware controllers
-uv run python examples/test_exploration.py --num_agent 2 --demo --attitude visibility_tracking_yaw
+# Same scenario for visibility-aware controllers
+uv run python examples/test_exploration.py --num_agent 2 --demo --attitude velocity_tracking_yaw
 uv run python examples/test_exploration.py --num_agent 2 --demo --attitude gatekeeper
 ```
 

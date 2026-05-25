@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import sys
-from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
@@ -36,56 +35,12 @@ from examples.test_exploration import (  # noqa: E402
 
 
 ROWWISE_RECIPES: Dict[Tuple[str, int], List[str]] = {
-    ("coscan", 1): ["l1_base"] * 6 + ["l2_variant_b"] * 4,
-    ("coscan", 2): ["l1_base"] * 7 + ["l2_variant_b"] * 3,
-    ("coscan", 3): ["l1_base"] * 6 + ["l2_variant_b"] * 4,
-    ("frontier", 1): ["l1_frontier_blindside"] * 5 + ["l1_base"] * 5,
-    ("frontier", 2): ["l1_frontier_blindside"] * 5 + ["l1_base"] * 5,
-    ("frontier", 3): ["l1_frontier_blindside"] * 6 + ["l1_base"] * 4,
-}
-
-
-def _weighted_pool(specs: List[Tuple[str, int, int]]) -> List[Dict[str, object]]:
-    pool: List[Dict[str, object]] = []
-    for family, seed, count in specs:
-        pool.extend({"family": family, "seed": int(seed)} for _ in range(int(count)))
-    return pool
-
-
-ROWWISE_FIXED_POOLS: Dict[Tuple[str, int], List[Dict[str, object]]] = {
-    ("coscan", 1): _weighted_pool(
-        [
-            ("open_blindside", 808, 36),
-            ("open_blindside", 707, 31),
-            ("l1_frontier_open_blindside", 707, 33),
-        ]
-    ),
-    ("coscan", 2): _weighted_pool(
-        [
-            ("l1_frontier_open_blindside", 42, 37),
-            ("l2_variant_b", 42, 63),
-        ]
-    ),
-    ("coscan", 3): _weighted_pool(
-        [
-            ("l1_frontier_open_blindside", 42, 41),
-            ("open_stress", 42, 59),
-        ]
-    ),
-    ("frontier", 1): _weighted_pool(
-        [
-            ("open_blindside", 2024, 31),
-            ("l1_frontier_anchor_blindside", 42, 33),
-            ("l1_frontier_open_blindside", 707, 36),
-        ]
-    ),
-    ("frontier", 2): _weighted_pool(
-        [
-            ("l1_frontier_open_blindside", 42, 47),
-            ("l1_frontier_blindside", 42, 53),
-        ]
-    ),
-    ("frontier", 3): [{"family": "l1_frontier_open_blindside", "seed": 42}],
+    ("coscan", 1): ["open_blindside", "l1_frontier_open_blindside", "l2_variant_b"],
+    ("coscan", 2): ["l1_frontier_open_blindside", "l2_variant_b"],
+    ("coscan", 3): ["l1_frontier_open_blindside", "open_stress"],
+    ("frontier", 1): ["open_blindside", "l1_frontier_anchor_blindside", "l1_frontier_open_blindside"],
+    ("frontier", 2): ["l1_frontier_open_blindside", "l1_frontier_blindside"],
+    ("frontier", 3): ["l1_frontier_open_blindside"],
 }
 
 FIXED_UNKNOWN = np.array(
@@ -183,14 +138,14 @@ BENCHMARK_ROW_ROBOT_SPEC_OVERRIDES: Dict[Tuple[str, int, str], Dict[str, object]
 }
 
 
-def _format_pool_counts(expanded_recipes: Dict[Tuple[str, int], List[str]]) -> List[str]:
+def _format_recipe_counts(expanded_recipes: Dict[Tuple[str, int], List[str]]) -> List[str]:
     lines: List[str] = []
     for algo, num_agent in sorted(expanded_recipes.keys()):
-        counts: "OrderedDict[str, int]" = OrderedDict()
+        counts: Dict[str, int] = {}
         for token in expanded_recipes[(algo, num_agent)]:
             counts[token] = counts.get(token, 0) + 1
         counts_str = ", ".join(f"`{token}` x{count}" for token, count in counts.items())
-        lines.append(f"- Fixed pool `{algo}/n{num_agent}`: {counts_str}")
+        lines.append(f"- Map recipe `{algo}/n{num_agent}`: {counts_str}")
     return lines
 
 
@@ -244,9 +199,9 @@ def _benchmark_metadata_lines(
             )
             + "."
         ),
-        "- Row-wise frozen map pool used for this benchmark:",
+        "- Row-wise map family recipe used for this benchmark:",
     ]
-    lines.extend(_format_pool_counts(expanded_recipes))
+    lines.extend(_format_recipe_counts(expanded_recipes))
     return lines
 
 
@@ -284,22 +239,6 @@ def _expand_recipe(base_families: List[str], trials_per_row: int) -> List[str]:
     repeats = int(np.ceil(float(trials_per_row) / float(len(base_families))))
     expanded = (list(base_families) * repeats)[:trials_per_row]
     return expanded
-
-
-def _job_signature(
-    map_cfg: MapConfig,
-    num_agent: int,
-    algo: str,
-    attitude: str,
-    robot_spec_overrides: Dict[str, object],
-) -> Tuple[int, str, str, str, str]:
-    geom_hash = hashlib.sha256()
-    geom_hash.update(np.ascontiguousarray(map_cfg.known_obs, dtype=np.float64).tobytes())
-    geom_hash.update(np.ascontiguousarray(map_cfg.unknown_obs, dtype=np.float64).tobytes())
-    if map_cfg.initial_states is not None:
-        geom_hash.update(np.ascontiguousarray(map_cfg.initial_states, dtype=np.float64).tobytes())
-    override_token = json.dumps(robot_spec_overrides, sort_keys=True)
-    return int(num_agent), str(algo), str(attitude), geom_hash.hexdigest(), override_token
 
 
 def build_map(seed: int, layout_index: int, variant: str, map_id: str) -> MapConfig:
@@ -409,47 +348,20 @@ def build_jobs(
     trials_per_row: int,
 ) -> Tuple[
     List[Tuple[MapConfig, int, str, str, str]],
-    Dict[str, str],
     Dict[str, MapConfig],
     Dict[Tuple[str, int], List[str]],
 ]:
     jobs: List[Tuple[MapConfig, int, str, str, str]] = []
-    family_by_map_id: Dict[str, str] = {}
     maps_by_id: Dict[str, MapConfig] = {}
     expanded_recipes: Dict[Tuple[str, int], List[str]] = {}
     for (algo, num_agent), families in ROWWISE_RECIPES.items():
         if len(row_filter) > 0 and (algo, num_agent) not in row_filter:
-            continue
-        fixed_pool = ROWWISE_FIXED_POOLS.get((algo, num_agent))
-        if fixed_pool:
-            row_entries = [fixed_pool[i % len(fixed_pool)] for i in range(trials_per_row)]
-            expanded_recipes[(algo, num_agent)] = [
-                f"{entry['family']}@{int(entry['seed'])}" for entry in row_entries
-            ]
-            for i, entry in enumerate(row_entries):
-                family_name = str(entry["family"])
-                pool_seed = int(entry["seed"])
-                map_id = f"{algo}_n{num_agent:01d}_m{i:02d}_{family_name}_s{pool_seed}"
-                family_by_map_id[map_id] = family_name
-                map_cfg = build_family_map(seed=pool_seed, family_name=family_name, map_id=map_id)
-                maps_by_id[map_id] = map_cfg
-                for attitude in ATTITUDES:
-                    jobs.append(
-                        (
-                            map_cfg,
-                            num_agent,
-                            algo,
-                            attitude,
-                            family_name,
-                        )
-                    )
             continue
         row_families = _expand_recipe(families, trials_per_row)
         expanded_recipes[(algo, num_agent)] = row_families
         for i, family_name in enumerate(row_families):
             map_id = f"{algo}_n{num_agent:01d}_m{i:02d}_{family_name}"
             map_seed = _seed_for_entry(seed, algo, num_agent, i, family_name)
-            family_by_map_id[map_id] = family_name
             map_cfg = build_family_map(seed=map_seed, family_name=family_name, map_id=map_id)
             maps_by_id[map_id] = map_cfg
             for attitude in ATTITUDES:
@@ -462,7 +374,7 @@ def build_jobs(
                         family_name,
                     )
                 )
-    return jobs, family_by_map_id, maps_by_id, expanded_recipes
+    return jobs, maps_by_id, expanded_recipes
 
 
 def main() -> None:
@@ -503,7 +415,7 @@ def main() -> None:
         os.remove(raw_path)
 
     row_filter = parse_row_filter(args.rows)
-    jobs, family_by_map_id, maps_by_id, expanded_recipes = build_jobs(
+    jobs, maps_by_id, expanded_recipes = build_jobs(
         args.seed,
         row_filter=row_filter,
         trials_per_row=args.trials_per_row,
@@ -557,36 +469,14 @@ def main() -> None:
             continue
         pending_jobs.append((map_cfg, num_agent, algo, attitude, family_name))
 
-    dedup_jobs: Dict[Tuple[int, str, str, str, str], Dict[str, object]] = {}
-    for map_cfg, num_agent, algo, attitude, family_name in pending_jobs:
-        robot_spec_overrides = get_benchmark_row_robot_spec_overrides(
-            algo=algo,
-            num_agent=num_agent,
-            attitude=attitude,
-        )
-        sig = _job_signature(map_cfg, num_agent, algo, attitude, robot_spec_overrides)
-        group = dedup_jobs.get(sig)
-        if group is None:
-            group = {
-                "map_cfg": map_cfg,
-                "num_agent": num_agent,
-                "algo": algo,
-                "attitude": attitude,
-                "robot_spec_overrides": robot_spec_overrides,
-                "aliases": [],
-            }
-            dedup_jobs[sig] = group
-        group["aliases"].append((map_cfg.map_id, family_name))
-    grouped_pending_jobs = list(dedup_jobs.values())
-
     if args.workers <= 1:
         done = 0
-        for group in grouped_pending_jobs:
-            map_cfg = group["map_cfg"]
-            num_agent = int(group["num_agent"])
-            algo = str(group["algo"])
-            attitude = str(group["attitude"])
-            robot_spec_overrides = dict(group["robot_spec_overrides"])
+        for map_cfg, num_agent, algo, attitude, family_name in pending_jobs:
+            robot_spec_overrides = get_benchmark_row_robot_spec_overrides(
+                algo=algo,
+                num_agent=num_agent,
+                attitude=attitude,
+            )
             row = run_exploration_case(
                 map_cfg=map_cfg,
                 num_agent=num_agent,
@@ -599,29 +489,26 @@ def main() -> None:
                 gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
                 robot_spec_overrides=robot_spec_overrides,
             )
-            for alias_map_id, family_name in group["aliases"]:
-                done += 1
-                alias_row = dict(row)
-                alias_row["map_id"] = alias_map_id
-                alias_row["attempt"] = 0
-                alias_row["family"] = family_name
-                rows.append(alias_row)
-                append_csv(raw_path, row={k: alias_row.get(k, "") for k in fieldnames}, header=fieldnames)
-                print(
-                    f"done {done:03d}/{len(pending_jobs)} family={family_name} map={alias_map_id} "
-                    f"n={num_agent} algo={algo} att={attitude} success={alias_row['success']} "
-                    f"coll={alias_row['collision_or_infeasible']} vis={alias_row['visibility_total']} sim={alias_row['sim_time']:.1f}",
-                    flush=True,
-                )
+            done += 1
+            row["attempt"] = 0
+            row["family"] = family_name
+            rows.append(row)
+            append_csv(raw_path, row={k: row.get(k, "") for k in fieldnames}, header=fieldnames)
+            print(
+                f"done {done:03d}/{len(pending_jobs)} family={family_name} map={map_cfg.map_id} "
+                f"n={num_agent} algo={algo} att={attitude} success={row['success']} "
+                f"coll={row['collision_or_infeasible']} vis={row['visibility_total']} sim={row['sim_time']:.1f}",
+                flush=True,
+            )
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             future_map = {}
-            for group in grouped_pending_jobs:
-                map_cfg = group["map_cfg"]
-                num_agent = int(group["num_agent"])
-                algo = str(group["algo"])
-                attitude = str(group["attitude"])
-                robot_spec_overrides = dict(group["robot_spec_overrides"])
+            for map_cfg, num_agent, algo, attitude, family_name in pending_jobs:
+                robot_spec_overrides = get_benchmark_row_robot_spec_overrides(
+                    algo=algo,
+                    num_agent=num_agent,
+                    attitude=attitude,
+                )
                 fut = ex.submit(
                     run_exploration_case,
                     map_cfg,
@@ -635,29 +522,22 @@ def main() -> None:
                     DEFAULT_GATEKEEPER_PARAMS,
                     robot_spec_overrides,
                 )
-                future_map[fut] = group
+                future_map[fut] = (map_cfg.map_id, num_agent, algo, attitude, family_name)
             done = 0
             for fut in as_completed(future_map):
-                group = future_map[fut]
-                map_cfg = group["map_cfg"]
-                num_agent = int(group["num_agent"])
-                algo = str(group["algo"])
-                attitude = str(group["attitude"])
+                map_id, num_agent, algo, attitude, family_name = future_map[fut]
                 row = fut.result()
-                for alias_map_id, family_name in group["aliases"]:
-                    done += 1
-                    alias_row = dict(row)
-                    alias_row["map_id"] = alias_map_id
-                    alias_row["attempt"] = 0
-                    alias_row["family"] = family_name
-                    rows.append(alias_row)
-                    append_csv(raw_path, row={k: alias_row.get(k, "") for k in fieldnames}, header=fieldnames)
-                    print(
-                        f"done {done:03d}/{len(pending_jobs)} family={family_name} map={alias_map_id} "
-                        f"n={num_agent} algo={algo} att={attitude} success={alias_row['success']} "
-                        f"coll={alias_row['collision_or_infeasible']} vis={alias_row['visibility_total']} sim={alias_row['sim_time']:.1f}",
-                        flush=True,
-                    )
+                done += 1
+                row["attempt"] = 0
+                row["family"] = family_name
+                rows.append(row)
+                append_csv(raw_path, row={k: row.get(k, "") for k in fieldnames}, header=fieldnames)
+                print(
+                    f"done {done:03d}/{len(pending_jobs)} family={family_name} map={map_id} "
+                    f"n={num_agent} algo={algo} att={attitude} success={row['success']} "
+                    f"coll={row['collision_or_infeasible']} vis={row['visibility_total']} sim={row['sim_time']:.1f}",
+                    flush=True,
+                )
 
     rows.sort(
         key=lambda r: (
@@ -692,7 +572,7 @@ def main() -> None:
         paper_timeout_by_agents=PAPER_TIMEOUT_BY_AGENTS,
         explore_timeout_by_agents=PAPER_TIMEOUT_BY_AGENTS,
     )
-    hero_map_id = next(iter(unique_maps))
+    representative_map_id = next(iter(unique_maps))
     with open(paper_timeout_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -705,7 +585,7 @@ def main() -> None:
     render_summary_markdown(
         summary_rows=summary_rows_raw,
         output_path=summary_raw_path,
-        hero_map_id=hero_map_id,
+        representative_map_id=representative_map_id,
         gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
         metadata_lines=_benchmark_metadata_lines(
             summary_mode="raw",
@@ -716,7 +596,7 @@ def main() -> None:
     render_summary_markdown(
         summary_rows=summary_rows_paper,
         output_path=summary_path,
-        hero_map_id=hero_map_id,
+        representative_map_id=representative_map_id,
         gatekeeper_params=DEFAULT_GATEKEEPER_PARAMS,
         metadata_lines=_benchmark_metadata_lines(
             summary_mode="paper",
