@@ -1,7 +1,32 @@
-# seamlis
 
-`seamlis` is a safe exploration and mapping framework. This repository provides the implementation of the `seamlis` algorithm.
+# SEAMLiS: Visibility-Aware Safety for Perception-Limited Multi-Robot Exploration
 
+This repository contains the implementation of **SEAMLiS** (**S**afe **E**xploration for **A**utonomous **M**ulti-Robot Systems Under **Li**mited **S**ensing), a modular execution-layer safety framework for decentralized multi-robot exploration under finite sensing range and limited field of view (FoV). SEAMLiS preserves the upstream goal-assignment and local-planning modules while filtering yaw and acceleration commands at execution time. A gatekeeper-based attitude filter permits nominal visibility-promoting yaw when certified safe and switches to a velocity-tracking backup policy when needed to keep the critical known-free/unknown boundary visible with sufficient braking margin. A CBF-based positional filter then avoids known obstacles, newly detected obstacles, and neighboring robots. Please see our [paper](https://arxiv.org/abs/2607.09959) and [project page](https://www.taekyung.me/seamlis) for more details.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/49a25ecc-765a-40de-976f-039a67e4f440" height="350px">
+    <img src="https://github.com/user-attachments/assets/2ac1f29c-6f84-43bb-a96c-c2f3ac1e881d" height="330px">
+</div>
+<div align="center">
+
+
+[[Project Page]](https://www.taekyung.me/seamlis)
+[[ArXiv]](https://arxiv.org/abs/2607.09959)
+[[Video]](https://youtu.be/0EzbbFIb2fY)
+[[Research Group]](https://dasc-lab.github.io/)
+
+</div>
+
+## Features
+
+- **Plug-and-play execution-layer safety** that leaves the upstream exploration-goal allocator and local planner unchanged.
+- **Visibility-aware attitude filtering** using gatekeeper to arbitrate between information-greedy visibility-promoting yaw and motion-aligned velocity-tracking yaw.
+- **CBF/MPC-CBF positional filtering** for known obstacles, newly detected obstacles, and neighboring robots.
+- **Formal collision-avoidance conditions** under the stated sensing, initialization, and controller-feasibility assumptions.
+- **Decentralized multi-robot execution** using local maps and asynchronous sharing of poses and frontier information rather than full occupancy maps.
+- **Configurable exploration benchmarks** for one to three robots, finite-range and limited-FoV sensing, hidden obstacles, frontier-based exploration, and a decentralized CoScan-inspired allocator.
+
+- 
 
 ## Installation
 
@@ -62,14 +87,7 @@ uv run python examples/test_exploration.py --num_agent 2 --demo --attitude veloc
 uv run python examples/test_exploration.py --num_agent 2 --demo --attitude gatekeeper
 ```
 
-The sample results from the basic example with 3 agents:
-
-|      Exploration and Mapping with SEAMLis            |
-| :-------------------------------: |
-|  <img src="https://github.com/user-attachments/assets/49a25ecc-765a-40de-976f-039a67e4f440"  height="350px"> |
-
-The green points are the A* waypoint. The blue points are the assigned frontier goals. The gray and orange are known and unknown obstacles in circle or super-ellipsoid.
-The darker orange represents that the unknown obstacle has been detected by some agent (doesn't mean all agents detected it).
+In the representative animation at the top of this README, green points denote A* waypoints and blue points denote assigned frontier goals. Gray and orange shapes denote known and initially unknown circular or superellipsoidal obstacles. Darker orange indicates that an initially unknown obstacle has been detected by at least one robot; it does not imply that every robot has detected it.
 
 Useful arguments:
 - `--num_agent {1,2,3}`
@@ -109,3 +127,17 @@ uv run python examples/run_benchmark.py
 ```
 
 The default output directory is `benchmark`.
+
+
+## Citing
+
+If you find this repository useful, please consider citing our paper:
+
+```bibtex
+@inproceedings{kim2026seamlis,
+    author     = {Kim, Taekyung and Kumar, Rahul H. and Menon, Aswin D. and Lin, Tzu-Hsiang and Panagou, Dimitra},
+    title      = {SEAMLiS: Visibility-Aware Safety for Perception-Limited Multi-Robot Exploration},
+    booktitle  = {arXiv preprint arXiv:2607.09959},
+    shorttitle = {SEAMLiS},
+    year       = {2026}
+}
